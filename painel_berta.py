@@ -700,14 +700,15 @@ def tela_repetidos(dm, ds, f):
     num_gpons = len(gpons_rep)
     taxa  = round(num_gpons / den_total * 100, 2) if den_total > 0 else 0
     rep_ab   = ds[ds["FLAG_REPETIDO_ABERTO"] == "SIM"]
-    rep_alrm = pd.DataFrame([v for v in gpons_rep.values() if ds[ds["FSLOI_GPONAccess"].str.upper()==k]["ALARMADO"].eq("SIM").any() for k in [v.get("pai_sa","")]][:0])  # placeholder
     # Alarmados: GPONs repetidos que estao alarmados
     gpons_rep_set = set(gpons_rep.keys())
-    rep_alrm_count = ds[
-        (ds["_GPON"].isin(gpons_rep_set) if "_GPON" in ds.columns else
-         ds["FSLOI_GPONAccess"].astype(str).str.upper().isin(gpons_rep_set)) &
-        (ds["ALARMADO"] == "SIM")
-    ].shape[0] if "ALARMADO" in ds.columns else 0
+    if "ALARMADO" in ds.columns:
+        gpon_col = ds["FSLOI_GPONAccess"].astype(str).str.strip().str.upper()
+        rep_alrm_count = ds[
+            gpon_col.isin(gpons_rep_set) & (ds["ALARMADO"] == "SIM")
+        ]["FSLOI_GPONAccess"].nunique()
+    else:
+        rep_alrm_count = 0
 
     cols = st.columns(5)
     for col, (lb,vl,sb,cl) in zip(cols,[
