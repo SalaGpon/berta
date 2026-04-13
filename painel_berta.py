@@ -278,18 +278,49 @@ _LYT = dict(
 # 4. DADOS
 # =============================================================================
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def ultima_atualizacao_base():
     """Retorna data/hora da ultima atualizacao do BASEBOT.csv no Supabase Storage."""
+    # Tentar via API de metadata do Storage
+    endpoints = [
+        f"{SUPABASE_URL}/storage/v1/object/info/public/berta/BASEBOT.csv",
+        f"{SUPABASE_URL}/storage/v1/object/berta/BASEBOT.csv",
+    ]
+    for url in endpoints:
+        try:
+            r = requests.get(url, headers=SUPABASE_HDR, timeout=10)
+            if r.status_code == 200:
+                info = r.json()
+                # Tentar varios campos de data
+                for campo in ("lastModified", "updated_at", "last_modified",
+                              "createdAt", "created_at", "LastModified"):
+                    updated = info.get(campo)
+                    if updated:
+                        try:
+                            dt = pd.to_datetime(updated, utc=True).tz_convert("America/Sao_Paulo")
+                            return dt.strftime("%d/%m/%Y %H:%M")
+                        except Exception:
+                            continue
+        except Exception:
+            continue
+
+    # Fallback: HEAD request para pegar Last-Modified do header HTTP
     try:
-        url = f"{SUPABASE_URL}/storage/v1/object/info/public/berta/BASEBOT.csv"
-        r = requests.get(url, headers=SUPABASE_HDR, timeout=10)
-        if r.status_code == 200:
-            info = r.json()
-            updated = info.get("updated_at") or info.get("created_at", "")
-            if updated:
-                dt = pd.to_datetime(updated, utc=True).tz_convert("America/Sao_Paulo")
-                return dt.strftime("%d/%m/%Y %H:%M")
+        url_pub = f"{SUPABASE_URL}/storage/v1/object/public/berta/BASEBOT.csv"
+        r = requests.head(url_pub, timeout=10)
+        lm = r.headers.get("Last-Modified") or r.headers.get("last-modified")
+        if lm:
+            dt = pd.to_datetime(lm, utc=True).tz_convert("America/Sao_Paulo")
+            return dt.strftime("%d/%m/%Y %H:%M")
+        # Usar x-amz-meta ou etag como indicador
+        for h in ("x-amz-meta-updated", "date", "Date"):
+            v = r.headers.get(h)
+            if v:
+                try:
+                    dt = pd.to_datetime(v, utc=True).tz_convert("America/Sao_Paulo")
+                    return dt.strftime("%d/%m/%Y %H:%M")
+                except Exception:
+                    continue
     except Exception:
         pass
     return None
@@ -949,10 +980,17 @@ def tela_diario(df, ds, f):
         st.warning("Nenhuma data disponivel.")
         return
 
+    # Resetar date picker se o valor salvo estiver fora do range da base atual
+    dia_padrao = datas_disp[0]
+    if "dia_ref" in st.session_state:
+        val_atual = st.session_state["dia_ref"]
+        if val_atual not in datas_disp:
+            st.session_state["dia_ref"] = dia_padrao
+
     c_pick, c_info = st.columns([2, 5])
     with c_pick:
         dia_sel = st.date_input("Data de referencia",
-            value=datas_disp[0],
+            value=dia_padrao,
             min_value=datas_disp[-1],
             max_value=datas_disp[0],
             key="dia_ref")
