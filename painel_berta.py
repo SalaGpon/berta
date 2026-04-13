@@ -787,14 +787,17 @@ def tela_repetidos(dm, ds, f):
     c1, c2 = st.columns(2)
     with c1:
         _sec("Pareto - Causas")
-        if "Descrição" in num.columns and num["Descrição"].notna().any():
-            caus = num["Descrição"].value_counts().head(10).reset_index()
+        # Pegar SAs dos reparos filhos (repetidos) a partir do gpons_rep
+        sas_filhos = [v["filho_sa"] for v in gpons_rep.values() if v.get("filho_sa")]
+        filhos_df  = ds[ds["Número SA"].isin(sas_filhos)] if sas_filhos else pd.DataFrame()
+        if not filhos_df.empty and "Descrição" in filhos_df.columns and filhos_df["Descrição"].notna().any():
+            caus = filhos_df["Descrição"].value_counts().head(10).reset_index()
             caus.columns = ["Causa","Qtd"]
             caus["L"] = caus["Causa"].str[:50]+"..."
             st.plotly_chart(_bar_h(caus["L"],caus["Qtd"],C["red"],"Top 10 Causas",h=380),
                             use_container_width=True)
         else:
-            st.info("Sem dados de causa.")
+            st.info("Sem dados de causa para os repetidos do periodo.")
     with c2:
         _sec("Pareto - Tecnicos")
         top = tb[tb["Repetidos"]>0].sort_values("Repetidos",ascending=False).head(15)
