@@ -357,11 +357,13 @@ def _processar_df(df):
         "flag_reparo_consolidado": "",
         "rep_dias_anterior"     : "",
         "rep_cod_fech_anterior" : "",
-        "rep_tecnico_anterior"  : "",
+        "rep_tecnico_pai"       : "",
+        "rep_tecnico_filho"     : "",
         "rep_agrupador_anterior": "",
         "rep_dat_fech_anterior" : "",
         "inf_dias_anterior"     : "",
-        "inf_tecnico_anterior"  : "",
+        "inf_tecnico_pai"       : "",
+        "inf_tecnico_filho"     : "",
         "inf_dat_fech_anterior" : "",
     }
     for col, default in _vip_defaults.items():
@@ -799,17 +801,17 @@ def tela_repetidos(dm, ds, f):
             _sec("Detalhamento — Historico do Reparo Anterior (VIP)")
             cols_det = [c for c in [
                 "CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Número SA",
-                "rep_dias_anterior","rep_tecnico_anterior","rep_cod_fech_anterior",
+                "rep_dias_anterior","rep_tecnico_filho","rep_cod_fech_anterior",
                 "rep_agrupador_anterior","Cidade",
             ] if c in rep_vip.columns]
             det = rep_vip[cols_det].drop_duplicates(subset=["FSLOI_GPONAccess"]).rename(columns={
-                "CODIGO_TECNICO_EXTRAIDO": "TR",
-                "NOME_TEC":               "Tecnico",
+                "CODIGO_TECNICO_EXTRAIDO": "TR (PAI)",
+                "NOME_TEC":               "Tecnico (PAI)",
                 "FSLOI_GPONAccess":       "GPON",
                 "Número SA":              "SA",
-                "rep_dias_anterior":      "Dias Anterior",
-                "rep_tecnico_anterior":   "Tec. Anterior",
-                "rep_cod_fech_anterior":  "Cod. Anterior",
+                "rep_dias_anterior":      "Dias p/ Repetir",
+                "rep_tecnico_filho":      "Tec. que Repetiu",
+                "rep_cod_fech_anterior":  "Cod. Enc.",
                 "rep_agrupador_anterior": "Agrupador",
             })
             st.dataframe(det, use_container_width=True, hide_index=True)
@@ -995,16 +997,16 @@ def tela_infancia(dm, ds, f):
         _sec("Detalhamento — Historico da Instalacao Anterior (VIP)")
         cols_det = [c for c in [
             "CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Número SA",
-            "inf_dias_anterior","inf_tecnico_anterior","inf_dat_fech_anterior","Cidade",
+            "inf_dias_anterior","inf_tecnico_filho","inf_dat_fech_anterior","Cidade",
         ] if c in inf.columns]
         det = inf[cols_det].drop_duplicates(subset=["FSLOI_GPONAccess"]).rename(columns={
-            "CODIGO_TECNICO_EXTRAIDO": "TR",
-            "NOME_TEC":               "Tecnico",
+            "CODIGO_TECNICO_EXTRAIDO": "TR (PAI Inst.)",
+            "NOME_TEC":               "Tecnico (PAI)",
             "FSLOI_GPONAccess":       "GPON",
             "Número SA":              "SA Inst.",
             "inf_dias_anterior":      "Dias p/ Reparo",
-            "inf_tecnico_anterior":   "Tec. Instalou",
-            "inf_dat_fech_anterior":  "Data Instalacao",
+            "inf_tecnico_filho":      "Tec. que Reparou",
+            "inf_dat_fech_anterior":  "Data Inst. Anterior",
         })
         st.dataframe(det, use_container_width=True, hide_index=True)
 
