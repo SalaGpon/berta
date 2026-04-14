@@ -278,49 +278,18 @@ _LYT = dict(
 # 4. DADOS
 # =============================================================================
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def ultima_atualizacao_base():
     """Retorna data/hora da ultima atualizacao do BASEBOT.csv no Supabase Storage."""
-    # Tentar via API de metadata do Storage
-    endpoints = [
-        f"{SUPABASE_URL}/storage/v1/object/info/public/berta/BASEBOT.csv",
-        f"{SUPABASE_URL}/storage/v1/object/berta/BASEBOT.csv",
-    ]
-    for url in endpoints:
-        try:
-            r = requests.get(url, headers=SUPABASE_HDR, timeout=10)
-            if r.status_code == 200:
-                info = r.json()
-                # Tentar varios campos de data
-                for campo in ("lastModified", "updated_at", "last_modified",
-                              "createdAt", "created_at", "LastModified"):
-                    updated = info.get(campo)
-                    if updated:
-                        try:
-                            dt = pd.to_datetime(updated, utc=True).tz_convert("America/Sao_Paulo")
-                            return dt.strftime("%d/%m/%Y %H:%M")
-                        except Exception:
-                            continue
-        except Exception:
-            continue
-
-    # Fallback: HEAD request para pegar Last-Modified do header HTTP
     try:
-        url_pub = f"{SUPABASE_URL}/storage/v1/object/public/berta/BASEBOT.csv"
-        r = requests.head(url_pub, timeout=10)
-        lm = r.headers.get("Last-Modified") or r.headers.get("last-modified")
-        if lm:
-            dt = pd.to_datetime(lm, utc=True).tz_convert("America/Sao_Paulo")
-            return dt.strftime("%d/%m/%Y %H:%M")
-        # Usar x-amz-meta ou etag como indicador
-        for h in ("x-amz-meta-updated", "date", "Date"):
-            v = r.headers.get(h)
-            if v:
-                try:
-                    dt = pd.to_datetime(v, utc=True).tz_convert("America/Sao_Paulo")
-                    return dt.strftime("%d/%m/%Y %H:%M")
-                except Exception:
-                    continue
+        url = f"{SUPABASE_URL}/storage/v1/object/info/public/berta/BASEBOT.csv"
+        r = requests.get(url, headers=SUPABASE_HDR, timeout=10)
+        if r.status_code == 200:
+            info = r.json()
+            updated = info.get("updated_at") or info.get("created_at", "")
+            if updated:
+                dt = pd.to_datetime(updated, utc=True).tz_convert("America/Sao_Paulo")
+                return dt.strftime("%d/%m/%Y %H:%M")
     except Exception:
         pass
     return None
@@ -380,6 +349,27 @@ def _processar_df(df):
     df["DIA_AB"]  = df["AB_DT"].dt.date
     df["MES_AB"]  = df["AB_DT"].dt.to_period("M")
     df["SEM_AB"]  = df["AB_DT"].dt.isocalendar().week.astype("Int64")
+
+    # ── Colunas VIP — garantir presença mesmo que o CSV não as tenha (retrocompat.) ──
+    _vip_defaults = {
+        "vip_flag_repetido"     : "NAO",
+        "vip_flag_infancia"     : "NAO",
+        "flag_reparo_consolidado": "",
+        "rep_dias_anterior"     : "",
+        "rep_cod_fech_anterior" : "",
+        "rep_tecnico_anterior"  : "",
+        "rep_agrupador_anterior": "",
+        "rep_dat_fech_anterior" : "",
+        "inf_dias_anterior"     : "",
+        "inf_tecnico_anterior"  : "",
+        "inf_dat_fech_anterior" : "",
+    }
+    for col, default in _vip_defaults.items():
+        if col not in df.columns:
+            df[col] = default
+        else:
+            df[col] = df[col].fillna(default)
+
     return df
 
 
@@ -726,20 +716,41 @@ def _calcular_repetidos_gpon(ds, mes_str):
 def tela_repetidos(dm, ds, f):
     _header("🔁", "Repetidos", f)
 
-    # Calcular com mesma logica do bot
-    gpons_rep, den_total, den_df = _calcular_repetidos_gpon(ds, f["mes"])
-    num_gpons = len(gpons_rep)
-    taxa  = round(num_gpons / den_total * 100, 2) if den_total > 0 else 0
-    rep_ab   = ds[ds["FLAG_REPETIDO_ABERTO"] == "SIM"]
-    # Alarmados: GPONs repetidos que estao alarmados
-    gpons_rep_set = set(gpons_rep.keys())
-    if "ALARMADO" in ds.columns:
-        gpon_col = ds["FSLOI_GPONAccess"].astype(str).str.strip().str.upper()
-        rep_alrm_count = ds[
-            gpon_col.isin(gpons_rep_set) & (ds["ALARMADO"] == "SIM")
-        ]["FSLOI_GPONAccess"].nunique()
+    # ── Fonte oficial: VIP REPETIDA (in_flag_indicador=SIM) ──
+    # vip_flag_repetido = SIM indica GPON confirmado pela base VIP
+    # Fallback: FLAG_REPETIDO_30D calculado internamente
+    _usa_vip = "vip_flag_repetido" in ds.columns and (ds["vip_flag_repetido"] == "SIM").any()
+
+    if _usa_vip:
+        # Denominador: reparos REP-FTTH concluídos c/ sucesso no mês (Data de criação)
+        den_df = dm[
+            (dm["Macro Atividade"] == "REP-FTTH") &
+            (dm["Estado"] == "CONCLUÍDO COM SUCESSO")
+        ]
+        den_total = len(den_df)
+
+        # Numerador: GPONs com vip_flag_repetido=SIM no escopo do mês
+        rep_vip = dm[
+            (dm["Macro Atividade"] == "REP-FTTH") &
+            (dm["Estado"] == "CONCLUÍDO COM SUCESSO") &
+            (dm["vip_flag_repetido"] == "SIM")
+        ]
+        num_gpons = rep_vip["FSLOI_GPONAccess"].nunique()
+        taxa = round(num_gpons / den_total * 100, 2) if den_total > 0 else 0
+        fonte_label = "🏛️ Fonte: VIP Oficial"
     else:
-        rep_alrm_count = 0
+        # Fallback cálculo interno
+        gpons_rep, den_total, den_df = _calcular_repetidos_gpon(ds, f["mes"])
+        num_gpons = len(gpons_rep)
+        taxa      = round(num_gpons / den_total * 100, 2) if den_total > 0 else 0
+        rep_vip   = pd.DataFrame()
+        fonte_label = "⚙️ Fonte: Cálculo Interno"
+
+    rep_ab   = ds[ds["FLAG_REPETIDO_ABERTO"] == "SIM"] if "FLAG_REPETIDO_ABERTO" in ds.columns else pd.DataFrame()
+    rep_alrm_count = (
+        rep_vip[rep_vip["ALARMADO"] == "SIM"]["FSLOI_GPONAccess"].nunique()
+        if _usa_vip and "ALARMADO" in rep_vip.columns else 0
+    )
 
     cols = st.columns(5)
     for col, (lb,vl,sb,cl) in zip(cols,[
@@ -750,54 +761,103 @@ def tela_repetidos(dm, ds, f):
         ("Alarmados",     f"{rep_alrm_count}", "GPON alarmado",  "kpi-red" if rep_alrm_count>0 else "kpi-green"),
     ]):
         col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
-    st.write("")
 
-    _sec("Indicador por Tecnico — GPONs unicos (mesma logica do bot)")
+    st.markdown(
+        f'<div style="font-size:11px;color:#64748b;margin:6px 0 14px 2px;">{fonte_label}</div>',
+        unsafe_allow_html=True)
+
+    _sec("Indicador por Tecnico")
     def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
 
-    # Denominador por tecnico (reparos abertos no mes)
-    den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
-        Total=("Número SA","count"),
-        Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else "")
-    ).reset_index() if not den_df.empty else pd.DataFrame(columns=["CODIGO_TECNICO_EXTRAIDO","Total","Nome"])
+    if _usa_vip:
+        # Denominador por técnico
+        den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+            Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else ""),
+            Total=("Número SA","count"),
+        ).reset_index() if not den_df.empty else pd.DataFrame(
+            columns=["CODIGO_TECNICO_EXTRAIDO","Nome","Total"])
 
-    # Numerador por tecnico (GPONs únicos onde é PAI)
-    rep_por_tec = {}
-    for gpon, info in gpons_rep.items():
-        tr = info.get("pai_tr","")
-        if tr:
-            rep_por_tec[tr] = rep_por_tec.get(tr, 0) + 1
+        # Numerador por técnico (GPONs únicos repetidos por técnico)
+        rep_tec = rep_vip.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+            Repetidos=("FSLOI_GPONAccess", "nunique"),
+        ).reset_index() if not rep_vip.empty else pd.DataFrame(
+            columns=["CODIGO_TECNICO_EXTRAIDO","Repetidos"])
 
-    rep_tec_df = pd.DataFrame(
-        [(k, v) for k,v in rep_por_tec.items()],
-        columns=["CODIGO_TECNICO_EXTRAIDO","Repetidos"]
-    ) if rep_por_tec else pd.DataFrame(columns=["CODIGO_TECNICO_EXTRAIDO","Repetidos"])
+        tb = den_tec.merge(rep_tec, on="CODIGO_TECNICO_EXTRAIDO", how="left")
+        tb["Repetidos"] = tb["Repetidos"].fillna(0).astype(int)
+        tb["Taxa%"]     = (tb["Repetidos"] / tb["Total"].replace(0, 1) * 100).round(2)
+        tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
+        tb = tb.rename(columns={"CODIGO_TECNICO_EXTRAIDO": "TR"})
+        tb["Status"] = tb["Taxa%"].apply(lambda t: "🔴" if t>12 else "🟡" if t>9 else "🟢" if t>0 else "⚪")
+        st.dataframe(tb[["Status","Nome","TR","Repetidos","Total","Taxa%"]], use_container_width=True, hide_index=True,
+                     column_config={"Taxa%": st.column_config.ProgressColumn(
+                         "Taxa%", format="%.1f%%", min_value=0,
+                         max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
 
-    tb = den_tec.merge(rep_tec_df, on="CODIGO_TECNICO_EXTRAIDO", how="left")
-    tb["Repetidos"] = tb["Repetidos"].fillna(0).astype(int)
-    tb["Taxa%"] = (tb["Repetidos"]/tb["Total"].replace(0,1)*100).round(2)
-    tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
-    tb.columns = ["TR","Total","Nome","Repetidos","Taxa%"]
-    tb["Status"] = tb["Taxa%"].apply(lambda t: "🔴" if t>12 else "🟡" if t>9 else "🟢" if t>0 else "⚪")
-    st.dataframe(tb[["Status","Nome","TR","Repetidos","Total","Taxa%"]], use_container_width=True, hide_index=True,
-                 column_config={"Taxa%": st.column_config.ProgressColumn(
-                     "Taxa%", format="%.1f%%", min_value=0,
-                     max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
+        # Detalhe VIP — dias desde reparo anterior
+        if not rep_vip.empty:
+            _sec("Detalhamento — Historico do Reparo Anterior (VIP)")
+            cols_det = [c for c in [
+                "CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Número SA",
+                "rep_dias_anterior","rep_tecnico_anterior","rep_cod_fech_anterior",
+                "rep_agrupador_anterior","Cidade",
+            ] if c in rep_vip.columns]
+            det = rep_vip[cols_det].drop_duplicates(subset=["FSLOI_GPONAccess"]).rename(columns={
+                "CODIGO_TECNICO_EXTRAIDO": "TR",
+                "NOME_TEC":               "Tecnico",
+                "FSLOI_GPONAccess":       "GPON",
+                "Número SA":              "SA",
+                "rep_dias_anterior":      "Dias Anterior",
+                "rep_tecnico_anterior":   "Tec. Anterior",
+                "rep_cod_fech_anterior":  "Cod. Anterior",
+                "rep_agrupador_anterior": "Agrupador",
+            })
+            st.dataframe(det, use_container_width=True, hide_index=True)
+    else:
+        # Fallback cálculo interno — comportamento original
+        den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+            Total=("Número SA","count"),
+            Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else "")
+        ).reset_index() if not den_df.empty else pd.DataFrame(columns=["CODIGO_TECNICO_EXTRAIDO","Total","Nome"])
 
+        rep_por_tec = {}
+        for gpon, info in gpons_rep.items():
+            tr = info.get("pai_tr","")
+            if tr:
+                rep_por_tec[tr] = rep_por_tec.get(tr, 0) + 1
+
+        rep_tec_df = pd.DataFrame(
+            [(k, v) for k,v in rep_por_tec.items()],
+            columns=["CODIGO_TECNICO_EXTRAIDO","Repetidos"]
+        ) if rep_por_tec else pd.DataFrame(columns=["CODIGO_TECNICO_EXTRAIDO","Repetidos"])
+
+        tb = den_tec.merge(rep_tec_df, on="CODIGO_TECNICO_EXTRAIDO", how="left")
+        tb["Repetidos"] = tb["Repetidos"].fillna(0).astype(int)
+        tb["Taxa%"] = (tb["Repetidos"]/tb["Total"].replace(0,1)*100).round(2)
+        tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
+        tb.columns = ["TR","Total","Nome","Repetidos","Taxa%"]
+        tb["Status"] = tb["Taxa%"].apply(lambda t: "🔴" if t>12 else "🟡" if t>9 else "🟢" if t>0 else "⚪")
+        st.dataframe(tb[["Status","Nome","TR","Repetidos","Total","Taxa%"]], use_container_width=True, hide_index=True,
+                     column_config={"Taxa%": st.column_config.ProgressColumn(
+                         "Taxa%", format="%.1f%%", min_value=0,
+                         max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
+
+    # Pareto de causas + tecnicos
+    num = rep_vip if _usa_vip else (
+        ds[ds["FSLOI_GPONAccess"].astype(str).str.upper().isin(set(gpons_rep.keys()))]
+        if not _usa_vip and gpons_rep else pd.DataFrame()
+    )
     c1, c2 = st.columns(2)
     with c1:
         _sec("Pareto - Causas")
-        # Pegar SAs dos reparos filhos (repetidos) a partir do gpons_rep
-        sas_filhos = [v["filho_sa"] for v in gpons_rep.values() if v.get("filho_sa")]
-        filhos_df  = ds[ds["Número SA"].isin(sas_filhos)] if sas_filhos else pd.DataFrame()
-        if not filhos_df.empty and "Descrição" in filhos_df.columns and filhos_df["Descrição"].notna().any():
-            caus = filhos_df["Descrição"].value_counts().head(10).reset_index()
+        if not num.empty and "Descrição" in num.columns and num["Descrição"].notna().any():
+            caus = num["Descrição"].value_counts().head(10).reset_index()
             caus.columns = ["Causa","Qtd"]
             caus["L"] = caus["Causa"].str[:50]+"..."
             st.plotly_chart(_bar_h(caus["L"],caus["Qtd"],C["red"],"Top 10 Causas",h=380),
                             use_container_width=True)
         else:
-            st.info("Sem dados de causa para os repetidos do periodo.")
+            st.info("Sem dados de causa.")
     with c2:
         _sec("Pareto - Tecnicos")
         top = tb[tb["Repetidos"]>0].sort_values("Repetidos",ascending=False).head(15)
@@ -810,26 +870,36 @@ def tela_repetidos(dm, ds, f):
 
     _sec("Evolucoes")
     tab1, tab2 = st.tabs(["📅 Semanal","📆 Mensal"])
-    rep_sc = ds[ds["FLAG_REPETIDO_30D"]=="SIM"].copy()
-    den_sc = ds[ds["FLAG_REPARO_VALIDO"]=="SIM"].copy()
+    # Para evolução: usa vip_flag_repetido se disponível, senão FLAG_REPETIDO_30D
+    _flag_rep_col = "vip_flag_repetido" if _usa_vip else "FLAG_REPETIDO_30D"
+    _flag_den_col = "FLAG_REPARO_VALIDO"
+    rep_sc  = ds[ds.get(_flag_rep_col, ds.get("FLAG_REPETIDO_30D", pd.Series(dtype=str))) == "SIM"].copy() \
+        if _flag_rep_col in ds.columns else ds[ds.get("FLAG_REPETIDO_30D","") == "SIM"].copy()
+    den_sc  = ds[ds["FLAG_REPARO_VALIDO"]=="SIM"].copy() if "FLAG_REPARO_VALIDO" in ds.columns else pd.DataFrame()
     with tab1:
-        rs = rep_sc.groupby("SEM_AB").size().reset_index(name="Rep")
-        dss = den_sc.groupby("SEM_AB").size().reset_index(name="Den")
-        ev = rs.merge(dss,on="SEM_AB",how="outer").fillna(0)
-        ev["Taxa"] = (ev["Rep"]/ev["Den"].replace(0,1)*100).round(2)
-        ev = ev[ev["SEM_AB"].notna()].sort_values("SEM_AB").tail(12)
-        ev["SEM_AB"] = "S"+ev["SEM_AB"].astype(str).str.zfill(2)
-        st.plotly_chart(_ev_dual(ev["SEM_AB"],ev["Rep"],ev["Taxa"],
-                                  C["red"],"Evolucao Semanal",meta=9), use_container_width=True)
+        if not rep_sc.empty and "SEM_AB" in rep_sc.columns:
+            rs = rep_sc.groupby("SEM_AB").size().reset_index(name="Rep")
+            dss = den_sc.groupby("SEM_AB").size().reset_index(name="Den") if not den_sc.empty else pd.DataFrame(columns=["SEM_AB","Den"])
+            ev = rs.merge(dss,on="SEM_AB",how="outer").fillna(0)
+            ev["Taxa"] = (ev["Rep"]/ev["Den"].replace(0,1)*100).round(2)
+            ev = ev[ev["SEM_AB"].notna()].sort_values("SEM_AB").tail(12)
+            ev["SEM_AB"] = "S"+ev["SEM_AB"].astype(str).str.zfill(2)
+            st.plotly_chart(_ev_dual(ev["SEM_AB"],ev["Rep"],ev["Taxa"],
+                                      C["red"],"Evolucao Semanal",meta=9), use_container_width=True)
+        else:
+            st.info("Sem dados para evolução semanal.")
     with tab2:
-        rm = rep_sc.groupby("MES_AB").size().reset_index(name="Rep")
-        dm2 = den_sc.groupby("MES_AB").size().reset_index(name="Den")
-        ev2 = rm.merge(dm2,on="MES_AB",how="outer").fillna(0)
-        ev2["Taxa"]   = (ev2["Rep"]/ev2["Den"].replace(0,1)*100).round(2)
-        ev2["MES_AB"] = ev2["MES_AB"].astype(str)
-        ev2 = ev2.sort_values("MES_AB").tail(12)
-        st.plotly_chart(_ev_dual(ev2["MES_AB"],ev2["Rep"],ev2["Taxa"],
-                                  C["red"],"Evolucao Mensal",meta=9), use_container_width=True)
+        if not rep_sc.empty and "MES_AB" in rep_sc.columns:
+            rm = rep_sc.groupby("MES_AB").size().reset_index(name="Rep")
+            dm2 = den_sc.groupby("MES_AB").size().reset_index(name="Den") if not den_sc.empty else pd.DataFrame(columns=["MES_AB","Den"])
+            ev2 = rm.merge(dm2,on="MES_AB",how="outer").fillna(0)
+            ev2["Taxa"]   = (ev2["Rep"]/ev2["Den"].replace(0,1)*100).round(2)
+            ev2["MES_AB"] = ev2["MES_AB"].astype(str)
+            ev2 = ev2.sort_values("MES_AB").tail(12)
+            st.plotly_chart(_ev_dual(ev2["MES_AB"],ev2["Rep"],ev2["Taxa"],
+                                      C["red"],"Evolucao Mensal",meta=9), use_container_width=True)
+        else:
+            st.info("Sem dados para evolução mensal.")
 
     ta, tb2 = st.tabs(["📂 Em Garantia","🚨 Alarmados"])
     with ta:
@@ -845,12 +915,14 @@ def tela_repetidos(dm, ds, f):
                 use_container_width=True, hide_index=True)
     with tb2:
         _sec("Repetidos com GPON Alarmado")
-        if rep_alrm.empty:
+        alrm_df = (rep_vip[rep_vip["ALARMADO"]=="SIM"] if _usa_vip and "ALARMADO" in rep_vip.columns
+                   else pd.DataFrame())
+        if alrm_df.empty:
             st.success("Nenhum repetido alarmado.")
         else:
             ok = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO",
-                               "NOME_TEC","Estado","Alarm ID"] if c in rep_alrm.columns]
-            st.dataframe(rep_alrm[ok].rename(columns={
+                               "NOME_TEC","Estado","Alarm ID"] if c in alrm_df.columns]
+            st.dataframe(alrm_df[ok].rename(columns={
                 "Número SA":"SA","FSLOI_GPONAccess":"GPON",
                 "CODIGO_TECNICO_EXTRAIDO":"TR","NOME_TEC":"Tecnico","Alarm ID":"Alarme"}),
                 use_container_width=True, hide_index=True)
@@ -862,14 +934,30 @@ def tela_repetidos(dm, ds, f):
 def tela_infancia(dm, ds, f):
     _header("👶", "Infancia", f)
 
-    inst = dm[dm["FLAG_INSTALACAO_VALIDA"]=="SIM"]
-    inf  = inst[inst["FLAG_INFANCIA_30D"]=="SIM"]
+    # ── Fonte oficial: VIP INFÂNCIA (in_flag_indicador=SIM) ──
+    _usa_vip_inf = "vip_flag_infancia" in dm.columns and (dm["vip_flag_infancia"] == "SIM").any()
+
+    # Instalações válidas: INST-FTTH concluídas c/ sucesso no mês
+    inst = dm[
+        (dm["Macro Atividade"] == "INST-FTTH") &
+        (dm["Estado"] == "CONCLUÍDO COM SUCESSO")
+    ]
+
+    if _usa_vip_inf:
+        # Infância: instalações onde o GPON tem vip_flag_infancia=SIM
+        inf = inst[inst["vip_flag_infancia"] == "SIM"]
+        fonte_label = "🏛️ Fonte: VIP Oficial"
+    else:
+        # Fallback: FLAG_INFANCIA_30D calculado internamente
+        inf = inst[inst["FLAG_INFANCIA_30D"] == "SIM"] if "FLAG_INFANCIA_30D" in inst.columns else pd.DataFrame()
+        fonte_label = "⚙️ Fonte: Cálculo Interno"
+
     taxa = round(len(inf)/len(inst)*100,2) if len(inst)>0 else 0
     estados_ab = ["ATRIBUÍDO","NÃO ATRIBUÍDO","RECEBIDO","EM EXECUÇÃO","EM DESLOCAMENTO"]
     gpons = set(inf["FSLOI_GPONAccess"].dropna().str.upper())
     rep_ab = ds[(ds["Macro Atividade"]=="REP-FTTH") &
                 (ds["Estado"].isin(estados_ab)) &
-                (ds["FSLOI_GPONAccess"].str.upper().isin(gpons))]
+                (ds["FSLOI_GPONAccess"].str.upper().isin(gpons))] if gpons else pd.DataFrame()
     inf_alrm = inf[inf["ALARMADO"]=="SIM"] if "ALARMADO" in inf.columns else pd.DataFrame()
 
     cols = st.columns(5)
@@ -881,14 +969,17 @@ def tela_infancia(dm, ds, f):
         ("Alarmados",    f"{len(inf_alrm):,}","GPON alarmado", "kpi-red" if len(inf_alrm)>0 else "kpi-green"),
     ]):
         col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
-    st.write("")
+
+    st.markdown(
+        f'<div style="font-size:11px;color:#64748b;margin:6px 0 14px 2px;">{fonte_label}</div>',
+        unsafe_allow_html=True)
 
     _sec("Indicador por Tecnico")
     def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
     di = inst.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
         Total=("Número SA","count"),
         Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else "")).reset_index()
-    ni = inf.groupby("CODIGO_TECNICO_EXTRAIDO").size().reset_index(name="Inf")
+    ni = inf.groupby("CODIGO_TECNICO_EXTRAIDO").size().reset_index(name="Inf") if not inf.empty else pd.DataFrame(columns=["CODIGO_TECNICO_EXTRAIDO","Inf"])
     tb = di.merge(ni,on="CODIGO_TECNICO_EXTRAIDO",how="left")
     tb["Inf"]   = tb["Inf"].fillna(0).astype(int)
     tb["Taxa%"] = (tb["Inf"]/tb["Total"]*100).round(2)
@@ -897,7 +988,25 @@ def tela_infancia(dm, ds, f):
     tb["Status"] = tb["Taxa%"].apply(lambda t: "🔴" if t>8 else "🟡" if t>5 else "🟢" if t>0 else "⚪")
     st.dataframe(tb[["Status","Nome","TR","Infancia","Total","Taxa%"]], use_container_width=True, hide_index=True,
                  column_config={"Taxa%": st.column_config.ProgressColumn(
-                     "Taxa%", format="%.1f%%", min_value=0, max_value=max(float(tb["Taxa%"].max()),1))})
+                     "Taxa%", format="%.1f%%", min_value=0, max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
+
+    # Detalhe VIP — dias desde instalação anterior
+    if _usa_vip_inf and not inf.empty:
+        _sec("Detalhamento — Historico da Instalacao Anterior (VIP)")
+        cols_det = [c for c in [
+            "CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Número SA",
+            "inf_dias_anterior","inf_tecnico_anterior","inf_dat_fech_anterior","Cidade",
+        ] if c in inf.columns]
+        det = inf[cols_det].drop_duplicates(subset=["FSLOI_GPONAccess"]).rename(columns={
+            "CODIGO_TECNICO_EXTRAIDO": "TR",
+            "NOME_TEC":               "Tecnico",
+            "FSLOI_GPONAccess":       "GPON",
+            "Número SA":              "SA Inst.",
+            "inf_dias_anterior":      "Dias p/ Reparo",
+            "inf_tecnico_anterior":   "Tec. Instalou",
+            "inf_dat_fech_anterior":  "Data Instalacao",
+        })
+        st.dataframe(det, use_container_width=True, hide_index=True)
 
     c1, c2 = st.columns(2)
     with c1:
@@ -924,26 +1033,37 @@ def tela_infancia(dm, ds, f):
 
     _sec("Evolucoes")
     tab1, tab2 = st.tabs(["📅 Semanal","📆 Mensal"])
-    inst_sc = ds[ds["FLAG_INSTALACAO_VALIDA"]=="SIM"].copy()
-    inf_sc  = ds[ds["FLAG_INFANCIA_30D"]=="SIM"].copy()
+    inst_sc = ds[
+        (ds["Macro Atividade"] == "INST-FTTH") &
+        (ds["Estado"] == "CONCLUÍDO COM SUCESSO")
+    ].copy()
+    # Para evolução usa vip_flag_infancia se disponível
+    _flag_inf_col = "vip_flag_infancia" if _usa_vip_inf else "FLAG_INFANCIA_30D"
+    inf_sc = ds[ds[_flag_inf_col] == "SIM"].copy() if _flag_inf_col in ds.columns else pd.DataFrame()
     with tab1:
-        is_ = inf_sc.groupby("SEM_FIM").size().reset_index(name="Inf")
-        ds2 = inst_sc.groupby("SEM_FIM").size().reset_index(name="Den")
-        ev  = is_.merge(ds2,on="SEM_FIM",how="outer").fillna(0)
-        ev["Taxa"] = (ev["Inf"]/ev["Den"].replace(0,1)*100).round(2)
-        ev = ev[ev["SEM_FIM"].notna()].sort_values("SEM_FIM").tail(12)
-        ev["SEM_FIM"] = "S"+ev["SEM_FIM"].astype(str).str.zfill(2)
-        st.plotly_chart(_ev_dual(ev["SEM_FIM"],ev["Inf"],ev["Taxa"],
-                                  C["purple"],"Evolucao Semanal"), use_container_width=True)
+        if not inf_sc.empty and "SEM_FIM" in inf_sc.columns:
+            is_ = inf_sc.groupby("SEM_FIM").size().reset_index(name="Inf")
+            ds2 = inst_sc.groupby("SEM_FIM").size().reset_index(name="Den") if not inst_sc.empty else pd.DataFrame(columns=["SEM_FIM","Den"])
+            ev  = is_.merge(ds2,on="SEM_FIM",how="outer").fillna(0)
+            ev["Taxa"] = (ev["Inf"]/ev["Den"].replace(0,1)*100).round(2)
+            ev = ev[ev["SEM_FIM"].notna()].sort_values("SEM_FIM").tail(12)
+            ev["SEM_FIM"] = "S"+ev["SEM_FIM"].astype(str).str.zfill(2)
+            st.plotly_chart(_ev_dual(ev["SEM_FIM"],ev["Inf"],ev["Taxa"],
+                                      C["purple"],"Evolucao Semanal"), use_container_width=True)
+        else:
+            st.info("Sem dados para evolução semanal.")
     with tab2:
-        im = inf_sc.groupby("MES_FIM").size().reset_index(name="Inf")
-        dm2 = inst_sc.groupby("MES_FIM").size().reset_index(name="Den")
-        ev2 = im.merge(dm2,on="MES_FIM",how="outer").fillna(0)
-        ev2["Taxa"]   = (ev2["Inf"]/ev2["Den"].replace(0,1)*100).round(2)
-        ev2["MES_FIM"] = ev2["MES_FIM"].astype(str)
-        ev2 = ev2.sort_values("MES_FIM").tail(12)
-        st.plotly_chart(_ev_dual(ev2["MES_FIM"],ev2["Inf"],ev2["Taxa"],
-                                  C["purple"],"Evolucao Mensal"), use_container_width=True)
+        if not inf_sc.empty and "MES_FIM" in inf_sc.columns:
+            im = inf_sc.groupby("MES_FIM").size().reset_index(name="Inf")
+            dm2 = inst_sc.groupby("MES_FIM").size().reset_index(name="Den") if not inst_sc.empty else pd.DataFrame(columns=["MES_FIM","Den"])
+            ev2 = im.merge(dm2,on="MES_FIM",how="outer").fillna(0)
+            ev2["Taxa"]   = (ev2["Inf"]/ev2["Den"].replace(0,1)*100).round(2)
+            ev2["MES_FIM"] = ev2["MES_FIM"].astype(str)
+            ev2 = ev2.sort_values("MES_FIM").tail(12)
+            st.plotly_chart(_ev_dual(ev2["MES_FIM"],ev2["Inf"],ev2["Taxa"],
+                                      C["purple"],"Evolucao Mensal"), use_container_width=True)
+        else:
+            st.info("Sem dados para evolução mensal.")
 
     ta, tb2 = st.tabs(["📂 Infancia Aberta","🚨 Infancia Alarmada"])
     with ta:
@@ -983,17 +1103,10 @@ def tela_diario(df, ds, f):
         st.warning("Nenhuma data disponivel.")
         return
 
-    # Resetar date picker se o valor salvo estiver fora do range da base atual
-    dia_padrao = datas_disp[0]
-    if "dia_ref" in st.session_state:
-        val_atual = st.session_state["dia_ref"]
-        if val_atual not in datas_disp:
-            st.session_state["dia_ref"] = dia_padrao
-
     c_pick, c_info = st.columns([2, 5])
     with c_pick:
         dia_sel = st.date_input("Data de referencia",
-            value=dia_padrao,
+            value=datas_disp[0],
             min_value=datas_disp[-1],
             max_value=datas_disp[0],
             key="dia_ref")
