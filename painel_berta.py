@@ -8,6 +8,8 @@ Tema: Branco / Azul Marinho — CSS injetado no topo, keys fixas, sem bugs de te
 
 import os
 import re
+import base64
+import uuid
 import requests
 import pandas as pd
 import plotly.graph_objects as go
@@ -475,7 +477,7 @@ def sidebar(df):
         st.divider()
 
         tela = st.radio("Tela",
-            ["📅 Diario", "📊 Producao Diaria", "🔁 Repetidos", "👶 Infancia", "📆 Calendario"],
+            ["📅 Diario", "📊 Producao Diaria", "🔁 Repetidos", "👶 Infancia", "📆 Calendario", "🏆 Qualidade"],
             label_visibility="collapsed", key="nav")
         st.divider()
 
@@ -1422,6 +1424,561 @@ def tela_calendario(df, ds, f):
 
 
 # =============================================================================
+# 9B. TELA — QUALIDADE (classificacao multidimensional + atas)
+# =============================================================================
+
+# ── Regras de classificacao por indicador ──────────────────────────────────
+
+def _cls_prod(v):
+    """Media de atividades/dia com sucesso."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ("S/D", "⬜", "#94a3b8", 0)
+    v = float(v)
+    if v >= 6:   return ("EXCELENTE",        "🏆", "#1e3a5f", 4)
+    if v >= 5:   return ("PARABENS",         "🟢", "#16a34a", 3)
+    if v >= 4:   return ("PARABENS",         "🟢", "#16a34a", 3)
+    if v >= 3:   return ("ATENCAO",          "🟡", "#d97706", 2)
+    if v >= 1:   return ("PRECISA MELHORAR", "🔴", "#dc2626", 1)
+    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 1)
+
+def _cls_efic(v):
+    """Eficacia % = sucesso / (sucesso + sem_sucesso)."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ("S/D", "⬜", "#94a3b8", 0)
+    v = float(v)
+    if v >= 85:  return ("EXCELENTE",        "🏆", "#1e3a5f", 4)
+    if v >= 82:  return ("PARABENS",         "🟢", "#16a34a", 3)
+    if v >= 75:  return ("ATENCAO",          "🟡", "#d97706", 2)
+    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 1)
+
+def _cls_rep(v):
+    """Taxa de repetido % (PAI = tecnico_anterior na VIP)."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ("S/D", "⬜", "#94a3b8", 0)
+    v = float(v)
+    if v < 2:    return ("EXCELENTE",        "🏆", "#1e3a5f", 4)
+    if v <= 5:   return ("OTIMO",            "🟢", "#16a34a", 3)
+    if v <= 9:   return ("PARABENS",         "🟢", "#16a34a", 2)
+    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 0)
+
+def _cls_inf(v):
+    """Taxa de infancia % (PAI = tecnico_anterior na VIP)."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ("S/D", "⬜", "#94a3b8", 0)
+    v = float(v)
+    if v < 3:    return ("OTIMO",            "🟢", "#16a34a", 3)
+    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 0)
+
+def _nota_total(pc, ec, rc, ic):
+    return pc[3] + ec[3] + rc[3] + ic[3]
+
+def _cor_nota(n):
+    if n >= 13: return "#1e3a5f"
+    if n >= 9:  return "#16a34a"
+    if n >= 5:  return "#d97706"
+    return "#dc2626"
+
+def _badge(label, cor):
+    return (f'<span style="background:{cor};color:white;padding:2px 10px;'
+            f'border-radius:12px;font-size:11px;font-weight:700">{label}</span>')
+
+# ── HTML da ata de qualidade ───────────────────────────────────────────────
+
+def _html_ata_qualidade(nome, codigo, supervisor, mes_ref,
+                        prod_val, efic_val, rep_val, inf_val,
+                        prod_cls, efic_cls, rep_cls, inf_cls, nota):
+    nota_max = 16
+    if nota >= 13:
+        cor_h = "135deg,#1a6c5c 0%,#2ca08c 100%"
+        titulo = "🏆 ATA DE RECONHECIMENTO — DESEMPENHO EXCELENTE"
+        msg = (f"Prezado(a) <strong>{nome}</strong>, seu desempenho no periodo foi "
+               f"excepcional. Todos os indicadores estao dentro ou acima das metas. Continue assim!")
+    elif nota >= 9:
+        cor_h = "135deg,#1a3a8f 0%,#2563eb 100%"
+        titulo = "✅ ATA DE QUALIDADE — BOM DESEMPENHO"
+        msg = (f"Prezado(a) <strong>{nome}</strong>, seu desempenho esta dentro das metas "
+               f"esperadas. Identifique os pontos de atencao para atingir a excelencia.")
+    elif nota >= 5:
+        cor_h = "135deg,#b45309 0%,#d97706 100%"
+        titulo = "⚠️ ATA DE ATENCAO — PONTOS DE MELHORIA"
+        msg = (f"Prezado(a) <strong>{nome}</strong>, ha indicadores que precisam de atencao. "
+               f"Vamos alinhar um plano de acao para a melhoria do desempenho.")
+    else:
+        cor_h = "135deg,#a8433d 0%,#c0392b 100%"
+        titulo = "🔴 ATA DE ACOMPANHAMENTO — NECESSITA MELHORIA"
+        msg = (f"Prezado(a) <strong>{nome}</strong>, seus indicadores estao abaixo das metas "
+               f"estabelecidas. E necessario um plano de acao imediato.")
+
+    def _ind(lbl, val, cls):
+        return (f'<div style="flex:1;min-width:140px;border:1px solid #e2e8f0;border-radius:8px;'
+                f'padding:14px;text-align:center">'
+                f'<div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">{lbl}</div>'
+                f'<div style="font-size:20px;font-weight:700;color:#1a3a8f;margin-bottom:8px">{val}</div>'
+                f'{_badge(cls[0], cls[2])}'
+                f'</div>')
+
+    inds_html = (
+        _ind("Produtividade", prod_val, prod_cls) +
+        _ind("Eficacia",      efic_val, efic_cls) +
+        _ind("Repetida",      rep_val,  rep_cls)  +
+        _ind("Infancia",      inf_val,  inf_cls)
+    )
+
+    cod_safe = codigo.replace("'","\\'")
+    nome_safe = nome.replace("'","\\'")
+    sup_safe  = supervisor.replace("'","\\'")
+    ts_now    = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dt_now    = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Ata — {nome}</title>
+<script src="https://cdn.jsdelivr.net/npm/signature_pad@4.0.0/dist/signature_pad.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',sans-serif}}
+body{{background:#f5f7fa;padding:20px;color:#333;line-height:1.6}}
+.box{{max-width:860px;margin:0 auto;background:white;border-radius:12px;
+      box-shadow:0 5px 25px rgba(0,0,0,.08);overflow:hidden}}
+.hdr{{background:linear-gradient({cor_h});color:white;padding:24px 30px}}
+.hdr h1{{font-size:20px;margin-bottom:4px;font-weight:700}}
+.hdr p{{font-size:12px;opacity:.9}}
+.body{{padding:26px}}
+.info{{background:#f0f4ff;border-radius:8px;padding:14px;margin-bottom:18px;
+       border-left:4px solid #1a3a8f;font-size:13px}}
+.info p{{margin:2px 0}}
+.msg{{background:#f8fafc;padding:13px;border-radius:8px;font-style:italic;
+      margin:16px 0;border-left:4px solid #1a3a8f;font-size:13px}}
+.inds{{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}}
+.nota{{text-align:center;margin:16px 0}}
+.nota span{{font-size:28px;font-weight:800;color:#1a3a8f}}
+.sig-box{{background:#f9fafc;border-radius:8px;padding:14px;
+          border:1px solid #eaeaea;margin-top:14px}}
+.sig-title{{font-size:13px;color:#1a3a8f;margin-bottom:8px;font-weight:600}}
+.sig-area{{position:relative;width:100%;height:120px;border:2px dashed #bdc3c7;
+           border-radius:8px;background:white;margin-bottom:10px}}
+.sig-canvas{{width:100%;height:100%;display:block;cursor:crosshair}}
+.sig-ph{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+         color:#95a5a6;font-size:13px;text-align:center;pointer-events:none}}
+.btns{{display:flex;gap:8px;margin-bottom:8px}}
+.btn{{padding:8px 14px;border:none;border-radius:6px;font-weight:600;
+      cursor:pointer;font-size:13px;flex:1}}
+.bp{{background:#1a3a8f;color:white}}
+.bs{{background:#ecf0f1;color:#333}}
+.sig-info{{background:#e8f4fc;border-radius:8px;padding:10px;margin-top:6px;
+           border-left:4px solid #1a3a8f;display:none;font-size:12px}}
+.sig-info.on{{display:block}}
+.btn-pdf{{background:#16a34a;color:white;border:none;border-radius:6px;
+          padding:12px;font-size:15px;font-weight:700;cursor:pointer;
+          width:100%;margin-top:18px}}
+.rodape{{margin-top:16px;padding-top:12px;border-top:1px solid #eaeaea;
+         font-size:11px;color:#94a3b8;text-align:center}}
+@media(max-width:560px){{.inds{{flex-direction:column}}}}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="hdr">
+    <h1>{titulo}</h1>
+    <p>Periodo: {mes_ref} &nbsp;·&nbsp; Gerado em: {dt_now}</p>
+  </div>
+  <div class="body">
+    <div class="info">
+      <p><strong>Nome:</strong> {nome}</p>
+      <p><strong>Codigo:</strong> {codigo}</p>
+      <p><strong>Supervisor:</strong> {supervisor}</p>
+    </div>
+    <div class="msg">{msg}</div>
+
+    <h3 style="color:#1a3a8f;font-size:14px;margin-bottom:10px">📊 Indicadores do Periodo</h3>
+    <div class="inds">{inds_html}</div>
+    <div class="nota">Pontuacao: <span>{nota}/{nota_max}</span></div>
+
+    <!-- Assinatura Tecnico -->
+    <div class="sig-box">
+      <div class="sig-title">✍️ Assinatura do Tecnico <span style="color:#ef4444">*</span></div>
+      <div class="sig-area">
+        <canvas id="cvT" class="sig-canvas"></canvas>
+        <div id="phT" class="sig-ph">Assine aqui (obrigatorio)</div>
+      </div>
+      <div class="btns">
+        <button class="btn bs" id="clrT">🧹 Limpar</button>
+        <button class="btn bp" id="valT">✔ Validar</button>
+      </div>
+      <div id="infoT" class="sig-info">
+        <strong>Tecnico:</strong> {nome} &nbsp;|&nbsp;
+        <strong>Data/Hora:</strong> <span id="dtT">--</span>
+      </div>
+    </div>
+
+    <!-- Assinatura Supervisor -->
+    <div class="sig-box" style="margin-top:14px">
+      <div class="sig-title">✍️ Assinatura do Supervisor <span style="color:#94a3b8">(opcional)</span></div>
+      <div class="sig-area">
+        <canvas id="cvS" class="sig-canvas"></canvas>
+        <div id="phS" class="sig-ph">Assine aqui (opcional)</div>
+      </div>
+      <div class="btns">
+        <button class="btn bs" id="clrS">🧹 Limpar</button>
+        <button class="btn bp" id="valS">✔ Validar</button>
+      </div>
+      <div id="infoS" class="sig-info">
+        <strong>Supervisor:</strong> {supervisor} &nbsp;|&nbsp;
+        <strong>Data/Hora:</strong> <span id="dtS">--</span>
+      </div>
+    </div>
+
+    <button class="btn-pdf" id="btnPDF" disabled>📄 Salvar Ata e Gerar PDF</button>
+    <div class="rodape">BERTA — Painel Operacional FTTH/GPON — Santa Catarina</div>
+  </div>
+</div>
+<script>
+let padT, padS, tecOk=false;
+function resize(cv){{const r=cv.getBoundingClientRect();cv.width=r.width;cv.height=r.height;}}
+window.onload=()=>{{
+  const cvT=document.getElementById('cvT'), cvS=document.getElementById('cvS');
+  resize(cvT); resize(cvS);
+  padT=new SignaturePad(cvT); padS=new SignaturePad(cvS);
+  padT.addEventListener('beginStroke',()=>document.getElementById('phT').style.display='none');
+  padS.addEventListener('beginStroke',()=>document.getElementById('phS').style.display='none');
+}};
+document.getElementById('clrT').onclick=()=>{{padT.clear();document.getElementById('phT').style.display='';tecOk=false;document.getElementById('btnPDF').disabled=true;document.getElementById('infoT').classList.remove('on');}};
+document.getElementById('clrS').onclick=()=>{{padS.clear();document.getElementById('phS').style.display='';document.getElementById('infoS').classList.remove('on');}};
+document.getElementById('valT').onclick=()=>{{
+  if(padT.isEmpty()){{alert('Assine antes de validar.');return;}}
+  document.getElementById('dtT').textContent=new Date().toLocaleString('pt-BR');
+  document.getElementById('infoT').classList.add('on');
+  tecOk=true; document.getElementById('btnPDF').disabled=false;
+}};
+document.getElementById('valS').onclick=()=>{{
+  if(padS.isEmpty()){{alert('Assine antes de validar.');return;}}
+  document.getElementById('dtS').textContent=new Date().toLocaleString('pt-BR');
+  document.getElementById('infoS').classList.add('on');
+}};
+document.getElementById('btnPDF').onclick=async()=>{{
+  if(!tecOk){{alert('Assinatura do tecnico e obrigatoria.');return;}}
+  const {{jsPDF}}=window.jspdf;
+  const doc=new jsPDF({{unit:'mm',format:'a4'}});
+  const W=doc.internal.pageSize.getWidth();
+  doc.setFillColor(26,58,143); doc.rect(0,0,W,38,'F');
+  doc.setTextColor(255,255,255); doc.setFontSize(13); doc.setFont(undefined,'bold');
+  doc.text('{titulo}',W/2,16,{{align:'center'}});
+  doc.setFontSize(9); doc.setFont(undefined,'normal');
+  doc.text('Periodo: {mes_ref}  |  Gerado: {dt_now}',W/2,26,{{align:'center'}});
+  let y=46; doc.setTextColor(51,51,51); doc.setFontSize(11);
+  doc.setFont(undefined,'bold'); doc.text('DADOS DO TECNICO',14,y); y+=7;
+  doc.setFont(undefined,'normal');
+  ['Nome: {nome_safe}','Codigo: {cod_safe}','Supervisor: {sup_safe}'].forEach(t=>{{doc.text(t,14,y);y+=6;}});
+  y+=4; doc.setFont(undefined,'bold'); doc.text('INDICADORES',14,y); y+=7;
+  doc.setFont(undefined,'normal');
+  ['Produtividade: {prod_val} — {prod_cls[0]}','Eficacia: {efic_val} — {efic_cls[0]}',
+   'Repetida: {rep_val} — {rep_cls[0]}','Infancia: {inf_val} — {inf_cls[0]}',
+   'Pontuacao Geral: {nota}/{nota_max}'].forEach(t=>{{doc.text(t,14,y);y+=6;}});
+  y+=6;
+  if(!padT.isEmpty()){{
+    doc.setFont(undefined,'bold'); doc.text('ASSINATURA DO TECNICO',14,y); y+=6;
+    doc.addImage(padT.toDataURL('image/png'),'PNG',14,y,80,28); y+=32;
+    doc.setFont(undefined,'normal'); doc.setFontSize(9);
+    doc.text('Validada em: '+new Date().toLocaleString('pt-BR'),14,y); y+=8;
+  }}
+  if(!padS.isEmpty()){{
+    doc.setFontSize(11); doc.setFont(undefined,'bold'); doc.text('ASSINATURA DO SUPERVISOR',14,y); y+=6;
+    doc.addImage(padS.toDataURL('image/png'),'PNG',14,y,80,28); y+=32;
+  }}
+  doc.setFontSize(8); doc.setTextColor(150,150,150);
+  doc.text('BERTA — Sistema Operacional FTTH/GPON — SC',W/2,285,{{align:'center'}});
+  doc.save('ata_qualidade_{cod_safe}_{ts_now}.pdf');
+  alert('PDF gerado com sucesso!');
+}};
+window.addEventListener('resize',()=>{{
+  setTimeout(()=>{{
+    [padT,padS].forEach(p=>{{if(p&&p.canvas){{const r=p.canvas.getBoundingClientRect();const d=p.toData();p.canvas.width=r.width;p.canvas.height=r.height;if(d&&d.length)p.fromData(d);}}}});
+  }},200);
+}});
+</script>
+</body>
+</html>"""
+
+
+def tela_qualidade(dm, ds, f):
+    _header("🏆", "Qualidade", f)
+
+    def _n(v):
+        return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
+
+    mes_ref = f.get("mes", "")
+
+    # ── Construir tabela por técnico ─────────────────────────────────────────
+    tecs = sorted(dm["CODIGO_TECNICO_EXTRAIDO"].dropna().unique())
+    if not tecs:
+        st.warning("Nenhum tecnico encontrado para os filtros selecionados.")
+        return
+
+    rows = []
+    for cod in tecs:
+        df_t = dm[dm["CODIGO_TECNICO_EXTRAIDO"] == cod].copy()
+        if df_t.empty:
+            continue
+
+        nome = _n(df_t["Técnico Atribuído"].dropna().iloc[0]) if not df_t["Técnico Atribuído"].dropna().empty else cod
+
+        # ── Produtividade: media de atividades/dia concluidas com sucesso ──
+        suc = df_t[df_t["FLAG_CONCLUIDO_SUCESSO"] == "SIM"]
+        dias_unicos = suc["DIA_FIM"].dropna().nunique()
+        prod_media  = round(len(suc) / dias_unicos, 1) if dias_unicos > 0 else None
+
+        # ── Eficácia: sucesso / (sucesso + sem_sucesso) ──
+        n_suc  = (df_t["FLAG_CONCLUIDO_SUCESSO"]     == "SIM").sum()
+        n_ss   = (df_t["FLAG_CONCLUIDO_SEM_SUCESSO"] == "SIM").sum()
+        efic   = round(n_suc / (n_suc + n_ss) * 100, 1) if (n_suc + n_ss) > 0 else None
+
+        # ── Repetida: vip_flag_repetido (PAI) ──
+        rep_den = (df_t["Macro Atividade"] == "REP-FTTH").sum()
+        rep_num = ((df_t["Macro Atividade"] == "REP-FTTH") &
+                   (df_t["vip_flag_repetido"] == "SIM")).sum()
+        rep_pct = round(rep_num / rep_den * 100, 1) if rep_den > 0 else None
+
+        # ── Infância: vip_flag_infancia (PAI) ──
+        inst_den = (df_t["FLAG_INSTALACAO_VALIDA"] == "SIM").sum() if "FLAG_INSTALACAO_VALIDA" in df_t.columns else 0
+        inst_num = ((df_t.get("FLAG_INSTALACAO_VALIDA", "NAO") == "SIM") &
+                    (df_t["vip_flag_infancia"] == "SIM")).sum() if inst_den > 0 else 0
+        inf_pct  = round(inst_num / inst_den * 100, 1) if inst_den > 0 else None
+
+        # ── Classificações ──
+        pc = _cls_prod(prod_media)
+        ec = _cls_efic(efic)
+        rc = _cls_rep(rep_pct)
+        ic = _cls_inf(inf_pct)
+        nota = _nota_total(pc, ec, rc, ic)
+
+        rows.append({
+            "cod":        cod,
+            "nome":       nome,
+            "prod_media": prod_media,
+            "efic_pct":   efic,
+            "rep_pct":    rep_pct,
+            "inf_pct":    inf_pct,
+            "prod_cls":   pc,
+            "efic_cls":   ec,
+            "rep_cls":    rc,
+            "inf_cls":    ic,
+            "nota":       nota,
+            "n_suc":      n_suc,
+            "dias":       dias_unicos,
+        })
+
+    if not rows:
+        st.warning("Sem dados suficientes para calcular indicadores.")
+        return
+
+    df_q = pd.DataFrame(rows).sort_values("nota", ascending=False).reset_index(drop=True)
+
+    # ── KPIs de resumo ───────────────────────────────────────────────────────
+    n_exc = (df_q["nota"] >= 13).sum()
+    n_bom = ((df_q["nota"] >= 9) & (df_q["nota"] < 13)).sum()
+    n_atc = ((df_q["nota"] >= 5) & (df_q["nota"] < 9)).sum()
+    n_mel = (df_q["nota"] < 5).sum()
+
+    cols_kpi = st.columns(5)
+    for col, lbl, val, cls in zip(
+        cols_kpi,
+        ["Tecnicos",      "🏆 Excelente",  "✅ Bom",      "⚠️ Atencao",  "🔴 Melhoria"],
+        [len(df_q),       n_exc,            n_bom,          n_atc,          n_mel],
+        ["kpi-blue",      "kpi-blue",       "kpi-green",    "kpi-yellow",   "kpi-red"],
+    ):
+        col.markdown(_kpi(lbl, val, "", cls), unsafe_allow_html=True)
+
+    st.write("")
+
+    # ── Legenda de regras ────────────────────────────────────────────────────
+    with st.expander("📋 Regras de classificacao", expanded=False):
+        st.markdown("""
+| Indicador | 🏆 Excelente | 🟢 Parabens / Otimo | 🟡 Atencao | 🔴 Precisa Melhorar |
+|---|---|---|---|---|
+| **Produtividade** (ativ/dia) | ≥ 6 | 4 ou 5 = Parabens | 3 | ≤ 2 |
+| **Eficacia** (%) | ≥ 85% | 82–85% | 75–82% | < 75% |
+| **Repetida** (%) | < 2% | 2–5% = Otimo · 5–9% = Parabens | — | > 9% |
+| **Infancia** (%) | — | < 3% = Otimo | — | ≥ 3% |
+
+**Pontuacao:** cada indicador vale 0–4 pontos. Total 0–16.
+≥13 Excelente | 9–12 Bom | 5–8 Atencao | <5 Precisa Melhorar
+        """)
+
+    # ── Tabela principal ─────────────────────────────────────────────────────
+    _sec("Ranking de Qualidade por Tecnico")
+
+    # Montar colunas de display
+    disp = []
+    for _, r in df_q.iterrows():
+        pv = f"{r['prod_media']:.1f}" if r['prod_media'] is not None else "S/D"
+        ev = f"{r['efic_pct']:.1f}%"  if r['efic_pct']   is not None else "S/D"
+        rv = f"{r['rep_pct']:.1f}%"   if r['rep_pct']    is not None else "S/D"
+        iv = f"{r['inf_pct']:.1f}%"   if r['inf_pct']    is not None else "S/D"
+        disp.append({
+            "Nome":       r["nome"],
+            "TR":         r["cod"],
+            "Prod.":      pv,
+            "Prod_S":     r["prod_cls"][0],
+            "Efic.":      ev,
+            "Efic_S":     r["efic_cls"][0],
+            "Repet.":     rv,
+            "Rep_S":      r["rep_cls"][0],
+            "Infan.":     iv,
+            "Inf_S":      r["inf_cls"][0],
+            "Nota":       f"{r['nota']}/16",
+        })
+
+    df_disp = pd.DataFrame(disp)
+
+    _cor_map = {
+        "EXCELENTE":        "background-color:#1e3a5f;color:white;font-weight:700",
+        "PARABENS":         "background-color:#16a34a;color:white;font-weight:700",
+        "OTIMO":            "background-color:#15803d;color:white;font-weight:700",
+        "ATENCAO":          "background-color:#d97706;color:white;font-weight:700",
+        "PRECISA MELHORAR": "background-color:#dc2626;color:white;font-weight:700",
+        "S/D":              "background-color:#e2e8f0;color:#64748b",
+    }
+    def _cor(v):
+        return _cor_map.get(v, "")
+
+    _scols = ["Prod_S", "Efic_S", "Rep_S", "Inf_S"]
+    try:
+        styled = df_disp.style.applymap(_cor, subset=_scols)
+    except AttributeError:
+        styled = df_disp.style.map(_cor, subset=_scols)
+
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        hide_index=True,
+        height=min(60 + len(df_disp) * 36, 700),
+        column_config={
+            "Nome":   st.column_config.TextColumn("Nome",   width="medium"),
+            "TR":     st.column_config.TextColumn("TR",     width="small"),
+            "Nota":   st.column_config.TextColumn("Nota",   width="small"),
+            "Prod.":  st.column_config.TextColumn("Prod.ativ/dia", width="small"),
+            "Efic.":  st.column_config.TextColumn("Eficacia",      width="small"),
+            "Repet.": st.column_config.TextColumn("Repetida",      width="small"),
+            "Infan.": st.column_config.TextColumn("Infancia",      width="small"),
+            "Prod_S": st.column_config.TextColumn("Status Prod.",  width="medium"),
+            "Efic_S": st.column_config.TextColumn("Status Efic.",  width="medium"),
+            "Rep_S":  st.column_config.TextColumn("Status Rep.",   width="medium"),
+            "Inf_S":  st.column_config.TextColumn("Status Inf.",   width="medium"),
+        }
+    )
+
+    # ── Gráfico de distribuição por indicador ────────────────────────────────
+    st.write("")
+    _sec("Distribuicao de Classificacoes por Indicador")
+
+    _cats  = ["EXCELENTE", "OTIMO", "PARABENS", "ATENCAO", "PRECISA MELHORAR", "S/D"]
+    _cores = ["#1e3a5f",   "#15803d","#16a34a", "#d97706", "#dc2626",           "#94a3b8"]
+    _inds  = ["prod_cls",  "efic_cls","rep_cls", "inf_cls"]
+    _lbls  = ["Produtividade","Eficacia","Repetida","Infancia"]
+
+    fig_dist = go.Figure()
+    for cat, cor in zip(_cats, _cores):
+        vals = [
+            (df_q[ind].apply(lambda x: x[0]) == cat).sum()
+            for ind in _inds
+        ]
+        if sum(vals) == 0:
+            continue
+        fig_dist.add_trace(go.Bar(
+            name=cat, x=_lbls, y=vals,
+            marker_color=cor,
+            text=[v if v > 0 else "" for v in vals],
+            textposition="auto", textfont_size=11,
+        ))
+
+    fig_dist.update_layout(
+        **_lyt("Distribuicao por Indicador e Classificacao", 340),
+        barmode="stack",
+        yaxis=dict(title="Qtd. Tecnicos", gridcolor=C["grid"]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+    )
+    st.plotly_chart(fig_dist, use_container_width=True)
+
+    # ── Geração de Atas ──────────────────────────────────────────────────────
+    _sec("Gerar Atas de Qualidade — Assinatura Digital")
+    st.caption(
+        "Clique em 📄 ATA para baixar o formulario HTML. "
+        "Abra no navegador, assine digitalmente e clique em Salvar Ata e Gerar PDF."
+    )
+
+    # Cabeçalho da lista
+    _h1, _h2, _h3, _h4, _h5, _h6, _h7 = st.columns([3, 1, 1, 1, 1, 1, 1])
+    for col, txt in zip(
+        [_h1, _h2, _h3, _h4, _h5, _h6, _h7],
+        ["**Tecnico**", "**Prod.**", "**Efic.**", "**Repet.**", "**Inf.**", "**Nota**", ""],
+    ):
+        col.markdown(txt)
+
+    sup_nome = f.get("supervisor", "N/I") or "N/I"
+
+    for _, r in df_q.iterrows():
+        pv = f"{r['prod_media']:.1f} /dia" if r['prod_media'] is not None else "S/D"
+        ev = f"{r['efic_pct']:.1f}%"       if r['efic_pct']   is not None else "S/D"
+        rv = f"{r['rep_pct']:.1f}%"        if r['rep_pct']    is not None else "S/D"
+        iv = f"{r['inf_pct']:.1f}%"        if r['inf_pct']    is not None else "S/D"
+
+        c1, c2, c3, c4, c5, c6, c7 = st.columns([3, 1, 1, 1, 1, 1, 1])
+
+        with c1:
+            st.write(f"**{r['nome']}** `{r['cod']}`")
+        with c2:
+            pc = r["prod_cls"]
+            st.markdown(f'<span style="color:{pc[2]};font-weight:700">{pc[1]} {pv}</span>',
+                        unsafe_allow_html=True)
+        with c3:
+            ec = r["efic_cls"]
+            st.markdown(f'<span style="color:{ec[2]};font-weight:700">{ec[1]} {ev}</span>',
+                        unsafe_allow_html=True)
+        with c4:
+            rc = r["rep_cls"]
+            st.markdown(f'<span style="color:{rc[2]};font-weight:700">{rc[1]} {rv}</span>',
+                        unsafe_allow_html=True)
+        with c5:
+            ic = r["inf_cls"]
+            st.markdown(f'<span style="color:{ic[2]};font-weight:700">{ic[1]} {iv}</span>',
+                        unsafe_allow_html=True)
+        with c6:
+            cor_n = _cor_nota(r["nota"])
+            st.markdown(
+                f'<span style="color:{cor_n};font-weight:800;font-size:15px">{r["nota"]}/16</span>',
+                unsafe_allow_html=True)
+        with c7:
+            if st.button("📄 ATA", key=f"ata_q_{r['cod']}"):
+                html_content = _html_ata_qualidade(
+                    nome      = r["nome"],
+                    codigo    = r["cod"],
+                    supervisor= sup_nome,
+                    mes_ref   = mes_ref,
+                    prod_val  = pv,
+                    efic_val  = ev,
+                    rep_val   = rv,
+                    inf_val   = iv,
+                    prod_cls  = r["prod_cls"],
+                    efic_cls  = r["efic_cls"],
+                    rep_cls   = r["rep_cls"],
+                    inf_cls   = r["inf_cls"],
+                    nota      = r["nota"],
+                )
+                fname = f"ata_qualidade_{r['cod']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                b64   = base64.b64encode(html_content.encode()).decode()
+                href  = (
+                    f'<a href="data:text/html;base64,{b64}" download="{fname}" target="_blank" '
+                    f'style="display:inline-block;background:#1e3a5f;color:white;padding:5px 12px;'
+                    f'border-radius:5px;text-decoration:none;font-size:11px;font-weight:700">'
+                    f'📥 Baixar</a>'
+                )
+                st.markdown(href, unsafe_allow_html=True)
+
+
+# =============================================================================
 # 10. MAIN
 # =============================================================================
 
@@ -1471,6 +2028,8 @@ def main():
         tela_infancia(dm, ds, f)
     elif tela == "📆 Calendario":
         tela_calendario(df, ds, f)
+    elif tela == "🏆 Qualidade":
+        tela_qualidade(dm, ds, f)
 
 
 if __name__ == "__main__":
