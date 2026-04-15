@@ -297,81 +297,37 @@ def ultima_atualizacao_base():
     return None
 
 
-# Colunas que o painel realmente usa — reduz download de 34 MB para ~15 MB
-COLUNAS_PAINEL_UTEIS = [
-    "FSLOI_GPONAccess","Número SA","Território de serviço: Nome",
-    "Cidade","Código de encerramento","Descrição","Observação",
-    "Técnico Atribuído","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-    "Data de criação","Fim Execução",
-    "Estado","Macro Atividade",
-    "FLAG_CONCLUIDO_SUCESSO","FLAG_CONCLUIDO_SEM_SUCESSO",
-    "FLAG_INSTALACAO_VALIDA","FLAG_REPARO_VALIDO",
-    "FLAG_REPETIDO_30D","FLAG_REPETIDO_ABERTO","FLAG_INFANCIA_30D",
-    "FLAG_P0_10_DIA","FLAG_P0_15_DIA",
-    "vip_flag_repetido","vip_flag_infancia","flag_reparo_consolidado",
-    "rep_tecnico_pai","rep_tecnico_filho","rep_dias_anterior",
-    "rep_cod_fech_anterior","rep_agrupador_anterior","rep_dat_fech_anterior",
-    "inf_tecnico_pai","inf_tecnico_filho","inf_dias_anterior","inf_dat_fech_anterior",
-    "ALARMADO","Alarm ID",
-]
-
-
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def carregar_base(_dummy=None):
     """
-    Carrega BASEBOT.csv do Supabase Storage.
-    Tenta BASEBOT.csv.gz primeiro (2 MB) e depois BASEBOT.csv (34 MB).
-    TTL 10 minutos — o robo sobe novo arquivo a cada 20 min.
+    Carrega BASEBOT.csv do Supabase Storage (producao).
+    Fallback automatico para arquivo local (desenvolvimento).
+    TTL de 5 minutos — atualiza quando o robo fizer novo upload.
     """
-    import io, gzip
+    import io
 
-    def _ler_bytes(content, nome=""):
-        """Detecta gzip e lê o CSV, usando apenas as colunas úteis."""
-        try:
-            if nome.endswith(".gz") or content[:2] == b"\x1f\x8b":
-                content = gzip.decompress(content)
-            texto = content.decode("utf-8-sig", errors="replace")
-            df = pd.read_csv(
-                io.StringIO(texto), sep=";", dtype=str, low_memory=False,
-                usecols=lambda c: c in COLUNAS_PAINEL_UTEIS,
-            )
-            return df if len(df) > 0 else None
-        except Exception as e:
-            st.warning(f"Erro ao ler arquivo: {e}")
-            return None
-
-    # Tentativa 1 — BASEBOT.csv.gz (versão comprimida, ~2 MB)
-    url_gz = SUPABASE_STORAGE_URL.replace("BASEBOT.csv", "BASEBOT.csv.gz")
-    try:
-        r = requests.get(url_gz, timeout=30)
-        if r.status_code == 200:
-            df = _ler_bytes(r.content, "BASEBOT.csv.gz")
-            if df is not None:
-                return _processar_df(df)
-    except Exception:
-        pass
-
-    # Tentativa 2 — BASEBOT.csv normal (~34 MB)
+    # Tentativa 1 — Supabase Storage
     try:
         r = requests.get(SUPABASE_STORAGE_URL, timeout=90)
         if r.status_code == 200:
-            df = _ler_bytes(r.content, "BASEBOT.csv")
-            if df is not None:
+            # Decodificar com utf-8-sig (remove BOM se houver)
+            texto = r.content.decode("utf-8-sig", errors="replace")
+            df = pd.read_csv(io.StringIO(texto), sep=";", dtype=str, low_memory=False)
+            if len(df) > 0:
                 return _processar_df(df)
             st.warning("Base do Supabase veio vazia — tentando arquivo local...")
         else:
             st.warning(f"Supabase Storage: HTTP {r.status_code} — tentando arquivo local...")
     except requests.exceptions.Timeout:
-        st.warning("Timeout ao baixar base — arquivo muito grande ou rede lenta.")
+        st.warning("Timeout ao baixar base do Supabase — tentando arquivo local...")
     except Exception as e:
         st.warning(f"Erro Supabase Storage: {e} — tentando arquivo local...")
 
-    # Tentativa 3 — arquivo local (desenvolvimento)
+    # Tentativa 2 — arquivo local (desenvolvimento)
     if CAMINHO_BASE_LOCAL:
         try:
             df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=";", encoding="utf-8-sig",
-                             dtype=str, low_memory=False,
-                             usecols=lambda c: c in COLUNAS_PAINEL_UTEIS)
+                             dtype=str, low_memory=False)
             return _processar_df(df)
         except Exception as e:
             st.error(f"Erro ao carregar arquivo local: {e}")
