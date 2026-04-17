@@ -1286,22 +1286,42 @@ def tela_diario(df, ds, f):
         if rep_dia_ab.empty:
             st.success("Nenhum repetido aberto hoje.")
         else:
-            ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                               "FSLOI_GPONAccess","ALARMADO"] if c in rep_dia_ab.columns]
-            st.dataframe(rep_dia_ab[ok].rename(columns={
-                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
-                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON"}),
+            # Adicionar coluna do Pai (tecnico_anterior) se disponível
+            if "rep_tecnico_pai" in rep_dia_ab.columns:
+                ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
+                                   "FSLOI_GPONAccess","rep_tecnico_pai","ALARMADO"] if c in rep_dia_ab.columns]
+                rename_map = {
+                    "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                    "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                    "rep_tecnico_pai":"Pai do Repetido"}
+            else:
+                ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
+                                   "FSLOI_GPONAccess","ALARMADO"] if c in rep_dia_ab.columns]
+                rename_map = {
+                    "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                    "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON"}
+            st.dataframe(rep_dia_ab[ok].rename(columns=rename_map),
                 use_container_width=True, hide_index=True)
     with c2:
         _sec("Repetidos em Garantia (Abertos)")
         if rep_ab_tot.empty:
             st.success("Nenhum reparo em garantia.")
         else:
-            ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                               "FSLOI_GPONAccess","DIA_AB","ALARMADO"] if c in rep_ab_tot.columns]
-            st.dataframe(rep_ab_tot[ok].rename(columns={
-                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
-                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON","DIA_AB":"Abertura"}),
+            # Adicionar coluna do Pai (tecnico_anterior) se disponível
+            if "rep_tecnico_pai" in rep_ab_tot.columns:
+                ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
+                                   "FSLOI_GPONAccess","rep_tecnico_pai","DIA_AB","ALARMADO"] if c in rep_ab_tot.columns]
+                rename_map = {
+                    "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                    "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                    "rep_tecnico_pai":"Pai do Repetido","DIA_AB":"Abertura"}
+            else:
+                ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
+                                   "FSLOI_GPONAccess","DIA_AB","ALARMADO"] if c in rep_ab_tot.columns]
+                rename_map = {
+                    "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                    "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON","DIA_AB":"Abertura"}
+            st.dataframe(rep_ab_tot[ok].rename(columns=rename_map),
                 use_container_width=True, hide_index=True)
 
     # Infancia
