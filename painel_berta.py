@@ -1384,7 +1384,7 @@ def tela_diario(df, ds, f):
 
 
 # =============================================================================
-# TELA — CALENDARIO MENSAL (CORES ATUALIZADAS)
+# TELA — CALENDARIO MENSAL (CORES ATUALIZADAS: 6-7 PRETO, ≥8 ROXO)
 # =============================================================================
 
 def tela_calendario(df, ds, f):
@@ -1429,11 +1429,11 @@ def tela_calendario(df, ds, f):
         col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
     st.write("")
 
-    # Legenda de cores ATUALIZADA
+    # Legenda de cores ATUALIZADA (6 e 7 = preto, ≥8 = roxo)
     st.markdown("""
     <div style="display:flex;gap:10px;margin-bottom:10px;font-size:11px;align-items:center;">
-        <span style="background:#7c3aed;color:white;padding:2px 8px;border-radius:4px;">≥7</span>
-        <span style="background:#000000;color:white;padding:2px 8px;border-radius:4px;">6</span>
+        <span style="background:#7c3aed;color:white;padding:2px 8px;border-radius:4px;">≥8</span>
+        <span style="background:#000000;color:white;padding:2px 8px;border-radius:4px;">6-7</span>
         <span style="background:#1e40af;color:white;padding:2px 8px;border-radius:4px;">5</span>
         <span style="background:#d4edda;color:#155724;padding:2px 8px;border-radius:4px;">4</span>
         <span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;">3</span>
@@ -1475,14 +1475,14 @@ def tela_calendario(df, ds, f):
     pivot = pivot[cols_order]
     pivot.columns = ["Nome","TR"] + cols_dia + ["Dias","Total","Sem Suc.","Media","Eficacia%"]
 
-    # Função de cor ATUALIZADA com as novas regras
+    # Função de cor ATUALIZADA: 6-7 preto, ≥8 roxo
     def _cor_cel(v):
         try:
             v = int(v)
         except Exception:
             return ""
-        if v >= 7: return "background-color:#7c3aed;color:white;font-weight:700;text-align:center"
-        if v == 6: return "background-color:#000000;color:white;font-weight:700;text-align:center"
+        if v >= 8: return "background-color:#7c3aed;color:white;font-weight:700;text-align:center"
+        if v in (6,7): return "background-color:#000000;color:white;font-weight:700;text-align:center"
         if v == 5: return "background-color:#1e40af;color:white;font-weight:700;text-align:center"
         if v == 4: return "background-color:#d4edda;color:#155724;font-weight:600;text-align:center"
         if v == 3: return "background-color:#fff3cd;color:#856404;font-weight:600;text-align:center"
