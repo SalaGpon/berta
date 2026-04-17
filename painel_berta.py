@@ -1184,7 +1184,7 @@ def tela_infancia(dm, ds, f):
                 use_container_width=True, hide_index=True)
 
 # =============================================================================
-# TELA — DIARIO
+# TELA — DIARIO (COM TECNICO (PAI) E TR (PAI))
 # =============================================================================
 
 def tela_diario(df, ds, f):
@@ -1241,6 +1241,14 @@ def tela_diario(df, ds, f):
         col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
     st.write("")
 
+    # Função auxiliar para extrair TR do nome (formato "Nome - TRxxxx")
+    def _extrair_tr(nome):
+        if pd.isna(nome) or not nome:
+            return ""
+        import re
+        m = re.search(r"(TR|TT|TC)\d+", str(nome), re.I)
+        return m.group(0).upper() if m else ""
+
     # Produtividade por tecnico
     _sec("Produtividade por Tecnico")
     def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
@@ -1286,43 +1294,39 @@ def tela_diario(df, ds, f):
         if rep_dia_ab.empty:
             st.success("Nenhum repetido aberto hoje.")
         else:
-            # Adicionar coluna do Pai (tecnico_anterior) se disponível
+            # Prepara colunas com TR do pai se disponível
+            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess"]
             if "rep_tecnico_pai" in rep_dia_ab.columns:
-                ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                                   "FSLOI_GPONAccess","rep_tecnico_pai","ALARMADO"] if c in rep_dia_ab.columns]
-                rename_map = {
-                    "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
-                    "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
-                    "rep_tecnico_pai":"Pai do Repetido"}
-            else:
-                ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                                   "FSLOI_GPONAccess","ALARMADO"] if c in rep_dia_ab.columns]
-                rename_map = {
-                    "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
-                    "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON"}
-            st.dataframe(rep_dia_ab[ok].rename(columns=rename_map),
-                use_container_width=True, hide_index=True)
+                rep_dia_ab["TR_PAI"] = rep_dia_ab["rep_tecnico_pai"].apply(_extrair_tr)
+                cols_rep.extend(["rep_tecnico_pai","TR_PAI"])
+            if "ALARMADO" in rep_dia_ab.columns:
+                cols_rep.append("ALARMADO")
+            df_show = rep_dia_ab[cols_rep].copy()
+            rename_map = {
+                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "rep_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
     with c2:
         _sec("Repetidos em Garantia (Abertos)")
         if rep_ab_tot.empty:
             st.success("Nenhum reparo em garantia.")
         else:
-            # Adicionar coluna do Pai (tecnico_anterior) se disponível
+            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","DIA_AB"]
             if "rep_tecnico_pai" in rep_ab_tot.columns:
-                ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                                   "FSLOI_GPONAccess","rep_tecnico_pai","DIA_AB","ALARMADO"] if c in rep_ab_tot.columns]
-                rename_map = {
-                    "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
-                    "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
-                    "rep_tecnico_pai":"Pai do Repetido","DIA_AB":"Abertura"}
-            else:
-                ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                                   "FSLOI_GPONAccess","DIA_AB","ALARMADO"] if c in rep_ab_tot.columns]
-                rename_map = {
-                    "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
-                    "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON","DIA_AB":"Abertura"}
-            st.dataframe(rep_ab_tot[ok].rename(columns=rename_map),
-                use_container_width=True, hide_index=True)
+                rep_ab_tot["TR_PAI"] = rep_ab_tot["rep_tecnico_pai"].apply(_extrair_tr)
+                cols_rep.extend(["rep_tecnico_pai","TR_PAI"])
+            if "ALARMADO" in rep_ab_tot.columns:
+                cols_rep.append("ALARMADO")
+            df_show = rep_ab_tot[cols_rep].copy()
+            rename_map = {
+                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON","DIA_AB":"Abertura",
+                "rep_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
 
     # Infancia
     c3, c4 = st.columns(2)
@@ -1331,13 +1335,21 @@ def tela_diario(df, ds, f):
         if inf_dia.empty:
             st.success("Nenhuma infancia hoje.")
         else:
-            ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                               "FSLOI_GPONAccess","SA_REPARO_INFANCIA"] if c in inf_dia.columns]
-            st.dataframe(inf_dia[ok].rename(columns={
+            cols_inf = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess"]
+            if "SA_REPARO_INFANCIA" in inf_dia.columns:
+                cols_inf.append("SA_REPARO_INFANCIA")
+            if "inf_tecnico_pai" in inf_dia.columns:
+                inf_dia["TR_PAI"] = inf_dia["inf_tecnico_pai"].apply(_extrair_tr)
+                cols_inf.extend(["inf_tecnico_pai","TR_PAI"])
+            df_show = inf_dia[cols_inf].copy()
+            rename_map = {
                 "Número SA":"SA Inst.","CODIGO_TECNICO_EXTRAIDO":"TR",
                 "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
-                "SA_REPARO_INFANCIA":"SA Reparo"}),
-                use_container_width=True, hide_index=True)
+                "SA_REPARO_INFANCIA":"SA Reparo",
+                "inf_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
     with c4:
         _sec("Infancia Aberta (Reparo em Andamento)")
         estados_ab = ["ATRIBUÍDO","NÃO ATRIBUÍDO","RECEBIDO","EM EXECUÇÃO","EM DESLOCAMENTO"]
@@ -1347,16 +1359,21 @@ def tela_diario(df, ds, f):
             (ds["Estado"].isin(estados_ab)) &
             (ds["FLAG_INFANCIA_30D"] == "SIM") &
             (ds["FSLOI_GPONAccess"].str.upper().isin(gpons_suc))
-        ]
+        ].copy()
         if inf_ab_dia.empty:
             st.success("Nenhuma infancia aberta.")
         else:
-            ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                               "FSLOI_GPONAccess","Estado"] if c in inf_ab_dia.columns]
-            st.dataframe(inf_ab_dia[ok].rename(columns={
+            cols_ab = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Estado"]
+            if "inf_tecnico_pai" in inf_ab_dia.columns:
+                inf_ab_dia["TR_PAI"] = inf_ab_dia["inf_tecnico_pai"].apply(_extrair_tr)
+                cols_ab.extend(["inf_tecnico_pai","TR_PAI"])
+            df_show = inf_ab_dia[cols_ab].copy()
+            rename_map = {
                 "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
-                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON"}),
-                use_container_width=True, hide_index=True)
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "inf_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
 
     # P0
     _sec("P0 — Controle de Encerramento")
