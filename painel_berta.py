@@ -1983,12 +1983,22 @@ def tela_qualidade(dm, ds, f):
             textposition="auto", textfont_size=11,
         ))
 
-    fig_dist.update_layout(
-        **_lyt("Distribuicao por Indicador e Classificacao", 340),
-        barmode="stack",
-        yaxis=dict(title="Qtd. Tecnicos", gridcolor=C["grid"]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-    )
+    _layout_dist = _lyt("Distribuicao por Indicador e Classificacao", 340).copy()
+    _layout_dist["barmode"] = "stack"
+    _layout_dist["yaxis"] = {
+        **_layout_dist.get("yaxis", {}),
+        "title": "Qtd. Tecnicos",
+        "gridcolor": C["grid"],
+    }
+    _layout_dist["legend"] = {
+        **_layout_dist.get("legend", {}),
+        "orientation": "h",
+        "yanchor": "bottom",
+        "y": 1.02,
+        "xanchor": "center",
+        "x": 0.5,
+    }
+    fig_dist.update_layout(**_layout_dist)
     st.plotly_chart(fig_dist, use_container_width=True)
 
     # ── Geração de Atas ──────────────────────────────────────────────────────
