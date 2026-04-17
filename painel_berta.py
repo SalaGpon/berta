@@ -1384,7 +1384,7 @@ def tela_diario(df, ds, f):
 
 
 # =============================================================================
-# TELA — CALENDARIO MENSAL
+# TELA — CALENDARIO MENSAL (CORES ATUALIZADAS)
 # =============================================================================
 
 def tela_calendario(df, ds, f):
@@ -1429,12 +1429,14 @@ def tela_calendario(df, ds, f):
         col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
     st.write("")
 
-    # Legenda de cores
+    # Legenda de cores ATUALIZADA
     st.markdown("""
     <div style="display:flex;gap:10px;margin-bottom:10px;font-size:11px;align-items:center;">
-        <span style="background:#1e3a5f;color:white;padding:2px 8px;border-radius:4px;">≥5</span>
-        <span style="background:#d4edda;color:#155724;padding:2px 8px;border-radius:4px;">=4</span>
-        <span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;">=3</span>
+        <span style="background:#7c3aed;color:white;padding:2px 8px;border-radius:4px;">≥7</span>
+        <span style="background:#000000;color:white;padding:2px 8px;border-radius:4px;">6</span>
+        <span style="background:#1e40af;color:white;padding:2px 8px;border-radius:4px;">5</span>
+        <span style="background:#d4edda;color:#155724;padding:2px 8px;border-radius:4px;">4</span>
+        <span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;">3</span>
         <span style="background:#ffcccc;color:#721c24;padding:2px 8px;border-radius:4px;">1-2</span>
         <span style="background:#f0f0f0;color:#6c757d;padding:2px 8px;border-radius:4px;">0</span>
         <span style="color:#64748b;margin-left:4px;">= atividades no dia</span>
@@ -1473,12 +1475,15 @@ def tela_calendario(df, ds, f):
     pivot = pivot[cols_order]
     pivot.columns = ["Nome","TR"] + cols_dia + ["Dias","Total","Sem Suc.","Media","Eficacia%"]
 
+    # Função de cor ATUALIZADA com as novas regras
     def _cor_cel(v):
         try:
             v = int(v)
         except Exception:
             return ""
-        if v >= 5: return "background-color:#1e3a5f;color:white;font-weight:700;text-align:center"
+        if v >= 7: return "background-color:#7c3aed;color:white;font-weight:700;text-align:center"
+        if v == 6: return "background-color:#000000;color:white;font-weight:700;text-align:center"
+        if v == 5: return "background-color:#1e40af;color:white;font-weight:700;text-align:center"
         if v == 4: return "background-color:#d4edda;color:#155724;font-weight:600;text-align:center"
         if v == 3: return "background-color:#fff3cd;color:#856404;font-weight:600;text-align:center"
         if v in (1,2): return "background-color:#ffcccc;color:#721c24;text-align:center"
@@ -1490,7 +1495,6 @@ def tela_calendario(df, ds, f):
         styled = pivot.style.applymap(_cor_cel, subset=cols_dia)
 
     max_p = int(pivot["Total"].max()) if not pivot.empty else 1
-    # 38px cabecalho + 35px por linha — mostra todos sem scroll vertical
     altura_total = 38 + (len(pivot) * 35)
 
     st.dataframe(styled, use_container_width=True, hide_index=True,
