@@ -60,7 +60,7 @@ def tela_diario(df, ds, f):
         m = re.search(r"(TR|TT|TC)\d+", str(nome), re.I)
         return m.group(0).upper() if m else ""
 
-    # Função para obter nome do técnico PAI e TR_PAI para repetidos (fallback robusto)
+    # Função robusta para obter nome do técnico PAI e TR_PAI para repetidos (fallback)
     def _get_pai_rep(row):
         pai_nome = ""
         pai_tr = ""
@@ -141,7 +141,6 @@ def tela_diario(df, ds, f):
             st.success("Nenhum repetido aberto hoje.")
         else:
             df_ab = rep_dia_ab.copy()
-            # Adiciona colunas de PAI usando função robusta
             pais = df_ab.apply(_get_pai_rep, axis=1)
             df_ab["Tecnico_PAI"] = [p[0] for p in pais]
             df_ab["TR_PAI"] = [p[1] for p in pais]
@@ -149,7 +148,6 @@ def tela_diario(df, ds, f):
             cols_show = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess"]
             if "ALARMADO" in df_ab.columns:
                 cols_show.append("ALARMADO")
-            # Sempre adicionar as colunas PAI que criamos
             cols_show.extend(["Tecnico_PAI","TR_PAI"])
 
             df_show = df_ab[cols_show].copy()
