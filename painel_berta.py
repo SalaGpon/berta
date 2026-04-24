@@ -3,7 +3,7 @@
 """
 BERTA — Painel Operacional do Supervisor v3.2 (W)
 Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario
-Fonte de dados: GitHub API → upload manual → arquivo local
+Fonte de dados: GitHub API (detecção automática) → upload manual → arquivo local
 """
 
 import os
@@ -30,7 +30,7 @@ st.set_page_config(
 )
 
 # =============================================================================
-# 2. CSS GLOBAL
+# 2. CSS GLOBAL (mantido exatamente como antes)
 # =============================================================================
 
 st.markdown("""
@@ -246,7 +246,7 @@ _LYT = dict(
 
 @st.cache_data(ttl=300, show_spinner=False)
 def carregar_base_github():
-    """Tenta carregar o BASEBOT.csv via API do GitHub."""
+    """Tenta carregar o BASEBOT.csv via API do GitHub, com detecção automática do separador."""
     try:
         token = st.secrets.get("GITHUB_TOKEN", "")
         if not token:
@@ -273,13 +273,43 @@ def carregar_base_github():
             return None
 
         texto = base64.b64decode(b64_content).decode("utf-8-sig", errors="replace")
-        df = pd.read_csv(io.StringIO(texto), sep="\t", dtype=str, low_memory=False)  # separador é TAB!
-        if len(df) == 0:
-            st.warning("GitHub: arquivo vazio.")
-            return None
 
-        st.success("✅ Base carregada do GitHub (API)")
-        return df
+        # Tenta ler com os separadores mais comuns, usando engine Python e ignorando linhas problemáticas
+        for sep in ["\t", ";", ","]:
+            try:
+                df = pd.read_csv(
+                    io.StringIO(texto),
+                    sep=sep,
+                    dtype=str,
+                    low_memory=False,
+                    engine="python",
+                    on_bad_lines="warn",
+                    encoding="utf-8-sig"
+                )
+                if df.shape[1] > 5:
+                    st.success(f"✅ Base carregada do GitHub (API) – separador detectado: '{sep}'")
+                    return df
+            except Exception:
+                continue
+
+        # Se nenhum separador funcionar, tenta detecção automática (engine Python, sep=None)
+        try:
+            df = pd.read_csv(
+                io.StringIO(texto),
+                sep=None,
+                dtype=str,
+                low_memory=False,
+                engine="python",
+                on_bad_lines="warn"
+            )
+            if df.shape[1] > 5:
+                st.success("✅ Base carregada do GitHub (API) – separador detectado automaticamente")
+                return df
+        except Exception as e:
+            st.warning(f"Não foi possível ler o arquivo: {e}")
+
+        return None
+
     except Exception as e:
         st.warning(f"Erro ao carregar do GitHub: {e}")
         return None
@@ -291,12 +321,22 @@ def carregar_base_local():
     if not CAMINHO_BASE_LOCAL:
         return None
     try:
-        df = pd.read_csv(CAMINHO_BASE_LOCAL, sep="\t", encoding="utf-8-sig", dtype=str, low_memory=False)
-        st.success("✅ Base carregada do arquivo local")
-        return df
+        # Detecção automática para arquivo local também
+        for sep in ["\t", ";", ","]:
+            try:
+                df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=sep, dtype=str, low_memory=False, engine="python", on_bad_lines="warn")
+                if df.shape[1] > 5:
+                    st.success(f"✅ Base carregada do arquivo local – separador '{sep}'")
+                    return df
+            except Exception:
+                continue
+        df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=None, dtype=str, low_memory=False, engine="python", on_bad_lines="warn")
+        if df.shape[1] > 5:
+            st.success("✅ Base carregada do arquivo local – separador automático")
+            return df
     except Exception as e:
         st.error(f"Erro ao carregar arquivo local: {e}")
-        return None
+    return None
 
 
 def carregar_base():
@@ -311,7 +351,6 @@ def carregar_base():
 
 def _processar_df(df):
     """Normaliza e cria colunas derivadas (adaptado ao novo layout do BASEBOT.csv)."""
-    # Remove espaços extras dos nomes das colunas
     df.columns = df.columns.str.strip()
 
     # Mapeamento das colunas obrigatórias (novo formato)
@@ -323,9 +362,6 @@ def _processar_df(df):
     col_territorio = "TERRITORIO"
     col_sa = "SA"
     col_gpon = "GPON"
-    col_supervisor = "SUPERVISOR"
-    col_tr = "TR"
-    col_nome_func = "NOME_FUNC"
     col_descricao = "DESCRICAO"
     col_obs = "OBSERVACAO"
     col_cod_fechamento = "COD_FECHAMENTO"
@@ -416,7 +452,7 @@ def _processar_df(df):
     df["FSLOI_GPONAccess"] = df[col_gpon]
     df["Técnico Atribuído"] = df[col_tecnico]  # usado em algumas partes
 
-    # Descrição e observação
+    # Descrição, observação, código de encerramento
     if "Descrição" not in df.columns:
         df["Descrição"] = df.get(col_descricao, "")
     if "Observação" not in df.columns:
@@ -562,12 +598,20 @@ def sidebar(df):
         )
         if uploaded_file is not None:
             try:
-                _df = pd.read_csv(uploaded_file, sep="\t", dtype=str, low_memory=False)
-                if len(_df) > 0:
+                # Tenta detectar o separador automaticamente
+                _df = pd.read_csv(
+                    uploaded_file,
+                    sep=None,
+                    dtype=str,
+                    low_memory=False,
+                    engine="python",
+                    on_bad_lines="warn"
+                )
+                if len(_df) > 0 and _df.shape[1] > 5:
                     st.session_state["df_manual"] = _df
                     st.success("📂 Arquivo carregado manualmente")
                 else:
-                    st.warning("Arquivo enviado está vazio.")
+                    st.warning("Arquivo enviado está vazio ou não possui colunas suficientes.")
             except Exception as e:
                 st.error(f"Erro ao ler arquivo: {e}")
 
@@ -633,14 +677,8 @@ def _escopo(df, f):
     return df
 
 # =============================================================================
-# 7. TELAS (as funções das telas permanecem exatamente as mesmas; apenas assegure-se
-#    de que estão usando as colunas mapeadas. Vou colocar as principais aqui.)
+# 7. TELAS (todas completas, adaptadas às novas colunas)
 # =============================================================================
-
-# (Por brevidade, vou incluir as definições das funções de tela que já estavam no código anterior.
-#  Como elas já usam as colunas genéricas ('Número SA', 'FSLOI_GPONAccess', etc.),
-#  não precisam ser alteradas, pois _processar_df já renomeou/mapou essas colunas.
-#  Apenas reproduzo a estrutura completa.)
 
 def tela_producao(dm, ds, f):
     _header("📊", "Producao Diaria", f)
@@ -1025,15 +1063,297 @@ def tela_calendario(df, ds, f):
         col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
     st.write("")
 
-    # (restante da tela calendário mantida como antes – omitida por brevidade, mas não foi alterada)
-    # Para não alongar, pode-se manter o código original da tela calendário que já funciona.
+    st.markdown("""
+    <div style="display:flex;gap:10px;margin-bottom:10px;font-size:11px;align-items:center;">
+        <span style="background:#7c3aed;color:white;padding:2px 8px;border-radius:4px;">≥8</span>
+        <span style="background:#000000;color:white;padding:2px 8px;border-radius:4px;">6-7</span>
+        <span style="background:#1e40af;color:white;padding:2px 8px;border-radius:4px;">5</span>
+        <span style="background:#d4edda;color:#155724;padding:2px 8px;border-radius:4px;">4</span>
+        <span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;">3</span>
+        <span style="background:#ffcccc;color:#721c24;padding:2px 8px;border-radius:4px;">1-2</span>
+        <span style="background:#f0f0f0;color:#6c757d;padding:2px 8px;border-radius:4px;">0</span>
+        <span style="color:#64748b;margin-left:4px;">= atividades no dia</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _sec(f"Producao por Tecnico — {lbl_mes}")
+
+    def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
+
+    suc_range = suc_m[suc_m["DIA"].isin(dias_range)]
+    pivot = suc_range.groupby(["CODIGO_TECNICO_EXTRAIDO","DIA"]).size().unstack(fill_value=0)
+    for d in dias_range:
+        if d not in pivot.columns:
+            pivot[d] = 0
+    pivot = pivot[dias_range]
+
+    nomes     = suc_m.groupby("CODIGO_TECNICO_EXTRAIDO")["Técnico Atribuído"].first().apply(_n)
+    ss_tec    = semsuc_m.groupby("CODIGO_TECNICO_EXTRAIDO").size()
+    dias_trab = suc_range.groupby("CODIGO_TECNICO_EXTRAIDO")["DIA"].nunique()
+
+    pivot.insert(0, "Nome", nomes)
+    pivot["Total"]     = pivot[dias_range].sum(axis=1)
+    pivot["Sem Suc."]  = ss_tec.reindex(pivot.index).fillna(0).astype(int)
+    pivot["Dias"]      = dias_trab.reindex(pivot.index).fillna(0).astype(int)
+    pivot["Media"]     = (pivot["Total"] / pivot["Dias"].replace(0,1)).round(1)
+    pivot["Eficacia%"] = (pivot["Total"]/(pivot["Total"]+pivot["Sem Suc."]).replace(0,1)*100).round(1)
+    pivot = pivot.sort_values("Total", ascending=False).reset_index()
+    pivot = pivot.rename(columns={"CODIGO_TECNICO_EXTRAIDO":"TR"})
+
+    cols_dia  = [str(d) for d in dias_range]
+    cols_order = ["Nome","TR"] + dias_range + ["Dias","Total","Sem Suc.","Media","Eficacia%"]
+    pivot = pivot[cols_order]
+    pivot.columns = ["Nome","TR"] + cols_dia + ["Dias","Total","Sem Suc.","Media","Eficacia%"]
+
+    def _cor_cel(v):
+        try:
+            v = int(v)
+        except: return ""
+        if v >= 8: return "background-color:#7c3aed;color:white;font-weight:700;text-align:center"
+        if v in (6,7): return "background-color:#000000;color:white;font-weight:700;text-align:center"
+        if v == 5: return "background-color:#1e40af;color:white;font-weight:700;text-align:center"
+        if v == 4: return "background-color:#d4edda;color:#155724;font-weight:600;text-align:center"
+        if v == 3: return "background-color:#fff3cd;color:#856404;font-weight:600;text-align:center"
+        if v in (1,2): return "background-color:#ffcccc;color:#721c24;text-align:center"
+        return "background-color:#f0f0f0;color:#adb5bd;text-align:center"
+
+    try:
+        styled = pivot.style.map(_cor_cel, subset=cols_dia)
+    except AttributeError:
+        styled = pivot.style.applymap(_cor_cel, subset=cols_dia)
+
+    max_p = int(pivot["Total"].max()) if not pivot.empty else 1
+    altura_total = 38 + (len(pivot) * 35)
+
+    st.dataframe(styled, use_container_width=True, hide_index=True,
+        column_config={
+            "Nome"     : st.column_config.TextColumn("Nome", width="medium"),
+            "TR"       : st.column_config.TextColumn("TR", width="small"),
+            "Total"    : st.column_config.ProgressColumn("Total", format="%d", min_value=0, max_value=max_p),
+            "Eficacia%": st.column_config.ProgressColumn("Eficacia%", format="%.1f%%", min_value=0, max_value=100),
+            "Media"    : st.column_config.NumberColumn("Media", format="%.1f"),
+        }, height=altura_total)
+
+    ef_list = []
+    for d in dias_range:
+        rows = df_m[df_m["DIA"] == d]
+        s = (rows["FLAG_CONCLUIDO_SUCESSO"]=="SIM").sum()
+        ss = (rows["FLAG_CONCLUIDO_SEM_SUCESSO"]=="SIM").sum()
+        ef_list.append({"DIA": d, "Concluidos": s, "Eficacia%": round(s / max(s+ss, 1) * 100, 1)})
+    ef_dia = pd.DataFrame(ef_list)
+
+    fig = go.Figure()
+    fig.add_bar(x=ef_dia["DIA"].astype(str), y=ef_dia["Concluidos"], name="Concluidos", marker_color=C["navy"], yaxis="y")
+    fig.add_scatter(x=ef_dia["DIA"].astype(str), y=ef_dia["Eficacia%"], name="Eficacia%", mode="lines+markers",
+                    line=dict(color=C["green"],width=2), marker_size=6, yaxis="y2")
+    fig.add_hline(y=85, line_dash="dash", line_color=C["yellow"], annotation_text="Meta 85%", yref="y2")
+    fig.update_layout(
+        **_lyt(f"Producao e Eficacia — {lbl_mes}", 320),
+        yaxis2=dict(overlaying="y", side="right", showgrid=False, tickfont_color=C["green"], range=[0,110]),
+        showlegend=True)
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def tela_diario(df, ds, f):
-    # (também mantida, apenas ajustando para usar as colunas novas já mapeadas)
     _header("📅", "Controle do Dia", f)
-    # ... (código existente da tela diário)
-    st.info("Tela Diário em funcionamento (código original mantido).")
+
+    datas_disp = sorted(ds["FIM_DT"].dropna().dt.date.unique(), reverse=True)
+    if not datas_disp:
+        st.warning("Nenhuma data disponivel.")
+        return
+
+    c_pick, c_info = st.columns([2, 5])
+    with c_pick:
+        dia_sel = st.date_input("Data de referencia",
+            value=datas_disp[0],
+            min_value=datas_disp[-1],
+            max_value=datas_disp[0],
+            key="dia_ref")
+
+    dm  = ds[ds["FIM_DT"].dt.date == dia_sel].copy()
+    dm_ab = ds[ds["AB_DT"].dt.date == dia_sel].copy()
+
+    suc     = dm[dm["FLAG_CONCLUIDO_SUCESSO"]    == "SIM"]
+    sem_suc = dm[dm["FLAG_CONCLUIDO_SEM_SUCESSO"] == "SIM"]
+    inst_d  = suc[suc["Macro Atividade"] == "INST-FTTH"]
+    rep_d   = suc[suc["Macro Atividade"] == "REP-FTTH"]
+    tecs_atv = suc["CODIGO_TECNICO_EXTRAIDO"].nunique()
+    efic    = round(len(suc)/(len(suc)+len(sem_suc))*100,1) if (len(suc)+len(sem_suc))>0 else 0
+
+    with c_info:
+        st.markdown(
+            f"<div style='margin-top:28px;font-size:12px;color:#64748b;'>"
+            f"<b>{dia_sel.strftime('%d/%m/%Y')}</b> — "
+            f"{tecs_atv} tecnicos ativos | {len(suc)+len(sem_suc)} atividades concluidas</div>",
+            unsafe_allow_html=True)
+
+    rep_dia_ab = dm_ab[dm_ab["FLAG_REPETIDO_30D"]  == "SIM"]
+    rep_ab_tot = ds[ds["FLAG_REPETIDO_ABERTO"]      == "SIM"]
+    inf_dia    = suc[suc["FLAG_INFANCIA_30D"]        == "SIM"]
+    p0_10 = ds[(ds["FIM_DT"].dt.date == dia_sel) & (ds["FLAG_P0_10_DIA"] == "SIM")]
+    p0_15 = ds[(ds["FIM_DT"].dt.date == dia_sel) & (ds["FLAG_P0_15_DIA"] == "SIM")]
+
+    cols = st.columns(7)
+    for col, (lb,vl,sb,cl) in zip(cols, [
+        ("Concluidos",    f"{len(suc):,}",  f"INST:{len(inst_d)} REP:{len(rep_d)}", "kpi-blue"),
+        ("Eficacia",      f"{efic}%",        "suc/total",   "kpi-green" if efic>=85 else "kpi-yellow" if efic>=70 else "kpi-red"),
+        ("Sem Sucesso",   f"{len(sem_suc):,}","pendencias",  "kpi-red" if len(sem_suc)>0 else "kpi-green"),
+        ("Rep. Dia",      f"{len(rep_dia_ab):,}","abertos hoje","kpi-red" if len(rep_dia_ab)>0 else "kpi-green"),
+        ("Rep. Abertos",  f"{len(rep_ab_tot):,}","em garantia","kpi-yellow" if len(rep_ab_tot)>0 else "kpi-green"),
+        ("P0 10h",        f"{p0_10['CODIGO_TECNICO_EXTRAIDO'].nunique()}","tecnicos","kpi-red" if not p0_10.empty else "kpi-green"),
+        ("P0 15h",        f"{p0_15['CODIGO_TECNICO_EXTRAIDO'].nunique()}","tecnicos","kpi-red" if not p0_15.empty else "kpi-green"),
+    ]):
+        col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
+    st.write("")
+
+    def _extrair_tr(nome):
+        if pd.isna(nome) or not nome: return ""
+        m = re.search(r"(TR|TT|TC)\d+", str(nome), re.I)
+        return m.group(0).upper() if m else ""
+
+    _sec("Produtividade por Tecnico")
+    def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
+    if suc.empty:
+        st.info("Nenhuma atividade concluida neste dia.")
+    else:
+        pt = suc.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+            Nome  =("Técnico Atribuído", lambda x: _n(x.iloc[0])),
+            Total =("Número SA","count"),
+            INST  =("Macro Atividade", lambda x: (x=="INST-FTTH").sum()),
+            REP   =("Macro Atividade", lambda x: (x=="REP-FTTH").sum()),
+        ).reset_index()
+        ss_tec = sem_suc.groupby("CODIGO_TECNICO_EXTRAIDO").size().reset_index(name="SemSuc")
+        pt = pt.merge(ss_tec, on="CODIGO_TECNICO_EXTRAIDO", how="left")
+        pt["SemSuc"] = pt["SemSuc"].fillna(0).astype(int)
+        pt["Efic%"]  = (pt["Total"]/(pt["Total"]+pt["SemSuc"]).replace(0,1)*100).round(1)
+        pt = pt.sort_values("Total", ascending=False).reset_index(drop=True)
+        pt.columns = ["TR","Nome","Total","INST","REP","Sem Suc.","Eficacia%"]
+        st.dataframe(pt, use_container_width=True, hide_index=True,
+            column_config={
+                "Total":    st.column_config.ProgressColumn("Total", format="%d", min_value=0,
+                            max_value=int(pt["Total"].max()) if not pt.empty else 1),
+                "Eficacia%":st.column_config.ProgressColumn("Eficacia%", format="%.1f%%", min_value=0, max_value=100),
+            })
+
+    _sec("Sem Sucesso — Pendencias do Dia")
+    if sem_suc.empty:
+        st.success("Nenhuma pendencia no dia.")
+    else:
+        ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
+                           "Macro Atividade","Descrição","Observação",
+                           "Código de encerramento"] if c in sem_suc.columns]
+        st.dataframe(sem_suc[ok].rename(columns={
+            "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR","NOME_TEC":"Tecnico",
+            "Macro Atividade":"Tipo","Código de encerramento":"Cod. Enc."}),
+            use_container_width=True, hide_index=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        _sec("Repetidos Abertos no Dia")
+        if rep_dia_ab.empty:
+            st.success("Nenhum repetido aberto hoje.")
+        else:
+            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess"]
+            if "rep_tecnico_pai" in rep_dia_ab.columns:
+                rep_dia_ab["TR_PAI"] = rep_dia_ab["rep_tecnico_pai"].apply(_extrair_tr)
+                cols_rep.extend(["rep_tecnico_pai","TR_PAI"])
+            if "ALARMADO" in rep_dia_ab.columns:
+                cols_rep.append("ALARMADO")
+            df_show = rep_dia_ab[cols_rep].copy()
+            rename_map = {
+                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "rep_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
+    with c2:
+        _sec("Repetidos em Garantia (Abertos)")
+        if rep_ab_tot.empty:
+            st.success("Nenhum reparo em garantia.")
+        else:
+            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","DIA_AB"]
+            if "rep_tecnico_pai" in rep_ab_tot.columns:
+                rep_ab_tot["TR_PAI"] = rep_ab_tot["rep_tecnico_pai"].apply(_extrair_tr)
+                cols_rep.extend(["rep_tecnico_pai","TR_PAI"])
+            if "ALARMADO" in rep_ab_tot.columns:
+                cols_rep.append("ALARMADO")
+            df_show = rep_ab_tot[cols_rep].copy()
+            rename_map = {
+                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON","DIA_AB":"Abertura",
+                "rep_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
+    c3, c4 = st.columns(2)
+    with c3:
+        _sec("Infancia — Instalacoes do Dia")
+        if inf_dia.empty:
+            st.success("Nenhuma infancia hoje.")
+        else:
+            cols_inf = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess"]
+            if "SA_REPARO_INFANCIA" in inf_dia.columns:
+                cols_inf.append("SA_REPARO_INFANCIA")
+            if "inf_tecnico_pai" in inf_dia.columns:
+                inf_dia["TR_PAI"] = inf_dia["inf_tecnico_pai"].apply(_extrair_tr)
+                cols_inf.extend(["inf_tecnico_pai","TR_PAI"])
+            df_show = inf_dia[cols_inf].copy()
+            rename_map = {
+                "Número SA":"SA Inst.","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "SA_REPARO_INFANCIA":"SA Reparo",
+                "inf_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
+    with c4:
+        _sec("Infancia Aberta (Reparo em Andamento)")
+        estados_ab = ["ATRIBUÍDO","NÃO ATRIBUÍDO","RECEBIDO","EM EXECUÇÃO","EM DESLOCAMENTO"]
+        gpons_suc = set(suc["FSLOI_GPONAccess"].dropna().str.upper())
+        inf_ab_dia = ds[
+            (ds["Macro Atividade"] == "REP-FTTH") &
+            (ds["Estado"].isin(estados_ab)) &
+            (ds["FLAG_INFANCIA_30D"] == "SIM") &
+            (ds["FSLOI_GPONAccess"].str.upper().isin(gpons_suc))
+        ].copy()
+        if inf_ab_dia.empty:
+            st.success("Nenhuma infancia aberta.")
+        else:
+            cols_ab = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Estado"]
+            if "inf_tecnico_pai" in inf_ab_dia.columns:
+                inf_ab_dia["TR_PAI"] = inf_ab_dia["inf_tecnico_pai"].apply(_extrair_tr)
+                cols_ab.extend(["inf_tecnico_pai","TR_PAI"])
+            df_show = inf_ab_dia[cols_ab].copy()
+            rename_map = {
+                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "inf_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
+    _sec("P0 — Controle de Encerramento")
+    cp1, cp2 = st.columns(2)
+    with cp1:
+        st.markdown("**P0 10h — Nao encerraram ate as 10h**")
+        if p0_10.empty:
+            st.success("Todos encerraram ate 10h.")
+        else:
+            t10 = p0_10.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+                Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0])),
+                Qtd =("Número SA","count")).reset_index()
+            t10.columns = ["TR","Nome","Qtd"]
+            st.dataframe(t10, use_container_width=True, hide_index=True)
+    with cp2:
+        st.markdown("**P0 15h — Nao encerraram ate as 15h**")
+        if p0_15.empty:
+            st.success("Todos encerraram ate 15h.")
+        else:
+            t15 = p0_15.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+                Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0])),
+                Qtd =("Número SA","count")).reset_index()
+            t15.columns = ["TR","Nome","Qtd"]
+            st.dataframe(t15, use_container_width=True, hide_index=True)
 
 
 def tela_qualidade(dm, ds, f):
