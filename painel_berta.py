@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BERTA — Painel Operacional do Supervisor v3.2 (W)
+BERTA — Painel Operacional do Supervisor v3.4
 Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario
 Fonte de dados: Repositório (API)
 """
@@ -246,7 +246,7 @@ _LYT = dict(
 
 @st.cache_data(ttl=300, show_spinner=False)
 def carregar_base_repositorio():
-    """Tenta carregar o BASEBOT.csv via API do repositório, com detecção automática do separador."""
+    """Carrega o BASEBOT.csv do repositório (API), com detecção automática do separador."""
     try:
         token = st.secrets.get("GITHUB_TOKEN", "")
         if not token:
@@ -345,7 +345,7 @@ def carregar_base():
 
 
 def _processar_df(df):
-    """Normaliza e cria colunas derivadas (adaptado ao novo layout do BASEBOT.csv)."""
+    """Normaliza e cria colunas derivadas."""
     df.columns = df.columns.str.strip()
 
     col_fim = "DH_FIM_EXEC_REAL"
@@ -424,8 +424,13 @@ def _processar_df(df):
     else:
         df["CDOE"] = df["CDOE"].fillna("")
 
-    if "Logradouro" not in df.columns:
-        df["Logradouro"] = df.get("LOGRADOURO", "")
+    # Endereço
+    if "LOGRADOURO" in df.columns:
+        df["Logradouro"] = df["LOGRADOURO"].fillna("")
+    if "NUMERO" in df.columns:
+        df["Número"] = df["NUMERO"].fillna("")
+    if "BAIRRO" in df.columns:
+        df["Bairro"] = df["BAIRRO"].fillna("")
 
     df["Território de serviço: Nome"] = df[col_territorio]
     df["Número SA"] = df[col_sa]
@@ -555,7 +560,7 @@ def _ev_dual(x, bars, line, bcolor, titulo, h=300, meta=None):
 
 
 # =============================================================================
-# 6. SIDEBAR – sem upload manual
+# 6. SIDEBAR
 # =============================================================================
 
 def sidebar(df):
@@ -575,7 +580,6 @@ def sidebar(df):
         st.markdown("**Filtros**")
         df_atual = df
 
-        # Mês padrão: mês atual, se existir
         meses = sorted(df_atual["MES_FIM"].dropna().astype(str).unique(), reverse=True)
         mes_padrao = datetime.now().strftime("%Y-%m")
         mes_idx = meses.index(mes_padrao) if mes_padrao in meses else 0
@@ -734,7 +738,6 @@ def tela_repetidos(dm, ds, f):
         (dm["Macro Atividade"] == "REP-FTTH") &
         (dm["FLAG_CONCLUIDO_SUCESSO"] == "SIM")
     ]
-    den_total = len(den_df)
 
     if tem_vip:
         num_df = dm[
@@ -742,41 +745,15 @@ def tela_repetidos(dm, ds, f):
             (dm["TEC_ANTERIOR"].notna()) &
             (dm["TEC_ANTERIOR"].str.strip() != "")
         ]
-        repetidos_total = len(num_df)
         fonte_label = "🏛️ Fonte: VIP Oficial (TEC_ANTERIOR + FLAG_REPETIDO)"
     else:
-        gpons_rep, den_total, _ = _calcular_repetidos_gpon(ds, f["mes"])
-        repetidos_total = len(gpons_rep)
+        gpons_rep, _, _ = _calcular_repetidos_gpon(ds, f["mes"])
         num_df = pd.DataFrame()
         fonte_label = "⚙️ Fonte: Cálculo Interno (GPON)"
 
-    taxa = round(repetidos_total / den_total * 100, 2) if den_total > 0 else 0
-
-    rep_ab = ds[ds["FLAG_REPETIDO_ABERTO"] == "SIM"] if "FLAG_REPETIDO_ABERTO" in ds.columns else pd.DataFrame()
-
-    if tem_vip:
-        rep_alrm = dm[(dm["FLAG_REPETIDO"] == "SIM") & (dm["ALARMADO"] == "SIM")]
-        rep_alrm_count = len(rep_alrm)
-    else:
-        rep_alrm_count = 0
-
-    cols = st.columns(5)
-    for col, (lb,vl,sb,cl) in zip(cols,[
-        ("Total Reparos", f"{den_total:,}",   "abertos no mes",  "kpi-blue"),
-        ("Repetidos",     f"{repetidos_total:,}",  "reparos filhos",  "kpi-red" if taxa>9 else "kpi-yellow"),
-        ("Taxa %",        f"{taxa}%",          "meta: <= 9%",     "kpi-red" if taxa>9 else "kpi-green"),
-        ("Em Garantia",   f"{len(rep_ab):,}",  "abertos 30d",     "kpi-yellow"),
-        ("Alarmados",     f"{rep_alrm_count}", "GPON alarmado",   "kpi-red" if rep_alrm_count>0 else "kpi-green"),
-    ]):
-        col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
-
-    st.markdown(
-        f'<div style="font-size:11px;color:#64748b;margin:6px 0 14px 2px;">{fonte_label}</div>',
-        unsafe_allow_html=True)
-
-    _sec("Indicador por Tecnico")
     def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
 
+    # Tabela por técnico
     if tem_vip:
         den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
             Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else ""),
@@ -804,6 +781,32 @@ def tela_repetidos(dm, ds, f):
         tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
         tb = tb.rename(columns={"CODIGO_TECNICO_EXTRAIDO": "TR"})
 
+    total_rep_tabela = int(tb["Total"].sum())
+    repetidos_tabela = int(tb["Repetidos"].sum())
+    taxa_tabela = round(repetidos_tabela / total_rep_tabela * 100, 2) if total_rep_tabela > 0 else 0
+
+    rep_ab = ds[ds["FLAG_REPETIDO_ABERTO"] == "SIM"] if "FLAG_REPETIDO_ABERTO" in ds.columns else pd.DataFrame()
+    if tem_vip:
+        rep_alrm = dm[(dm["FLAG_REPETIDO"] == "SIM") & (dm["ALARMADO"] == "SIM")]
+        rep_alrm_count = len(rep_alrm)
+    else:
+        rep_alrm_count = 0
+
+    cols = st.columns(5)
+    for col, (lb,vl,sb,cl) in zip(cols,[
+        ("Total Reparos", f"{total_rep_tabela:,}",   "abertos no mes",  "kpi-blue"),
+        ("Repetidos",     f"{repetidos_tabela:,}",   "reparos filhos",  "kpi-red" if taxa_tabela>9 else "kpi-yellow"),
+        ("Taxa %",        f"{taxa_tabela}%",          "meta: <= 9%",     "kpi-red" if taxa_tabela>9 else "kpi-green"),
+        ("Em Garantia",   f"{len(rep_ab):,}",         "abertos 30d",     "kpi-yellow"),
+        ("Alarmados",     f"{rep_alrm_count}",        "GPON alarmado",   "kpi-red" if rep_alrm_count>0 else "kpi-green"),
+    ]):
+        col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
+
+    st.markdown(
+        f'<div style="font-size:11px;color:#64748b;margin:6px 0 14px 2px;">{fonte_label}</div>',
+        unsafe_allow_html=True)
+
+    _sec("Indicador por Tecnico")
     tb["Status"] = tb["Taxa%"].apply(lambda t: "🔴" if t>12 else "🟡" if t>9 else "🟢" if t>0 else "⚪")
     st.dataframe(tb[["Status","Nome","TR","Repetidos","Total","Taxa%"]], use_container_width=True, hide_index=True,
                  column_config={"Taxa%": st.column_config.ProgressColumn(
@@ -812,16 +815,71 @@ def tela_repetidos(dm, ds, f):
 
     if tem_vip and not num_df.empty:
         _sec("Detalhamento — Repetidos (VIP)")
+        # Construir endereço composto
+        num_df["Endereço"] = ""
+        if "Logradouro" in num_df.columns:
+            num_df["Endereço"] = num_df["Logradouro"].fillna("").astype(str)
+        if "Número" in num_df.columns:
+            num_df["Endereço"] += (", " + num_df["Número"].fillna("").astype(str)).str.rstrip(", ")
+        if "Bairro" in num_df.columns:
+            num_df["Endereço"] += (" - " + num_df["Bairro"].fillna("").astype(str)).str.rstrip(" -")
+
         cols_det = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
                                 "rep_dias_anterior","rep_tecnico_filho","rep_cod_fech_anterior",
-                                "rep_agrupador_anterior","Cidade","TEC_ANTERIOR","Logradouro"] if c in num_df.columns]
+                                "rep_agrupador_anterior","Cidade","TEC_ANTERIOR","Endereço"] if c in num_df.columns]
         det = num_df[cols_det].copy()
         det.rename(columns={
             "FSLOI_GPONAccess":"GPON","Número SA":"SA Filho",
             "CODIGO_TECNICO_EXTRAIDO":"TR (executor)",
             "TEC_ANTERIOR":"TR (PAI)",
-            "Logradouro":"Endereço"}, inplace=True)
+        }, inplace=True)
         st.dataframe(det, use_container_width=True, hide_index=True)
+
+        # Gráficos adicionais
+        st.divider()
+
+        # Repetidos por dia
+        _sec("Repetidos por Dia do Mês")
+        if "DIA_FIM" in num_df.columns:
+            diario = num_df.groupby("DIA_FIM").size().reset_index(name="Repetidos")
+            diario["Dia"] = pd.to_datetime(diario["DIA_FIM"]).dt.strftime("%d/%m")
+            fig_dia = go.Figure(go.Bar(x=diario["Dia"], y=diario["Repetidos"],
+                                       marker_color=C["red"], name="Repetidos por dia"))
+            fig_dia.update_layout(**_lyt("", 300))
+            st.plotly_chart(fig_dia, use_container_width=True)
+        else:
+            st.info("Dados insuficientes para gráfico diário.")
+
+        # Pareto de causas
+        _sec("Pareto de Causas dos Repetidos")
+        causas = num_df.groupby("Código de encerramento").size().reset_index(name="Qtd")
+        causas = causas.sort_values("Qtd", ascending=False)
+        causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
+        causas["Acum"] = causas["Perc"].cumsum()
+        fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_causas.add_bar(x=causas["Código de encerramento"], y=causas["Qtd"],
+                           name="Ocorrências", marker_color=C["red"])
+        fig_causas.add_scatter(x=causas["Código de encerramento"], y=causas["Acum"],
+                               name="% Acumulado", mode="lines+markers",
+                               line=dict(color=C["yellow"], width=2), secondary_y=True)
+        fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
+        fig_causas.update_yaxes(showgrid=False, secondary_y=True)
+        st.plotly_chart(fig_causas, use_container_width=True)
+
+        # Pareto por técnico
+        _sec("Pareto de Técnicos — Repetidos")
+        pareto_tec = tb[["Nome","TR","Repetidos"]].sort_values("Repetidos", ascending=False)
+        pareto_tec["Perc"] = (pareto_tec["Repetidos"] / pareto_tec["Repetidos"].sum() * 100).round(1)
+        pareto_tec["Acum"] = pareto_tec["Perc"].cumsum()
+        fig_tec = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_tec.add_bar(x=pareto_tec["Nome"], y=pareto_tec["Repetidos"],
+                        name="Repetidos", marker_color=C["purple"])
+        fig_tec.add_scatter(x=pareto_tec["Nome"], y=pareto_tec["Acum"],
+                            name="% Acumulado", mode="lines+markers",
+                            line=dict(color=C["yellow"], width=2), secondary_y=True)
+        fig_tec.update_layout(**_lyt("Pareto de Técnicos", 400))
+        fig_tec.update_yaxes(showgrid=False, secondary_y=True)
+        st.plotly_chart(fig_tec, use_container_width=True)
 
 
 def _calcular_repetidos_gpon(ds, mes_str):
@@ -1112,11 +1170,17 @@ def tela_diario(df, ds, f):
         st.warning("Nenhuma data disponivel.")
         return
 
-    # Data padrão: o dia mais recente disponível (normalmente o dia atual ou último dia útil)
+    # Data padrão: dia atual, se existir, senão o último disponível
+    hoje = datetime.today().date()
+    if hoje in datas_disp:
+        valor_padrao = hoje
+    else:
+        valor_padrao = datas_disp[0]
+
     c_pick, c_info = st.columns([2, 5])
     with c_pick:
         dia_sel = st.date_input("Data de referencia",
-            value=datas_disp[0],
+            value=valor_padrao,
             min_value=datas_disp[-1],
             max_value=datas_disp[0],
             key="dia_ref")
@@ -1363,18 +1427,18 @@ def tela_qualidade(dm, ds, f):
         atv = dm[dm["CODIGO_TECNICO_EXTRAIDO"] == tr]
         suc = atv[atv["FLAG_CONCLUIDO_SUCESSO"] == "SIM"]
         tot = atv[atv["Estado"].isin(["CONCLUÍDO COM SUCESSO", "CONCLUÍDO SEM SUCESSO"])]
-        
+
         dias = atv["DIA_FIM"].nunique()
         media_diaria = round(len(suc) / dias, 1) if dias > 0 else 0.0
-        
+
         efi = round(len(suc) / len(tot) * 100, 1) if len(tot) > 0 else 0.0
-        
+
         # Repetidos
         if "FLAG_REPETIDO" in dm.columns and "TEC_ANTERIOR" in dm.columns:
             filhos = dm[(dm["FLAG_REPETIDO"] == "SIM") & (dm["TEC_ANTERIOR"].str.strip().str.upper() == tr)]
             num_rep = len(filhos)
-            den_rep = len(dm[(dm["Macro Atividade"] == "REP-FTTH") & 
-                             (dm["FLAG_CONCLUIDO_SUCESSO"] == "SIM") & 
+            den_rep = len(dm[(dm["Macro Atividade"] == "REP-FTTH") &
+                             (dm["FLAG_CONCLUIDO_SUCESSO"] == "SIM") &
                              (dm["CODIGO_TECNICO_EXTRAIDO"] == tr)])
         else:
             num_rep = 0
@@ -1391,7 +1455,7 @@ def tela_qualidade(dm, ds, f):
                             break
                 den_rep = len(df_rep_tec)
         taxa_rep = round(num_rep / den_rep * 100, 1) if den_rep > 0 else 0.0
-        
+
         # Infância
         if "FLAG_INFANCIA" in dm.columns:
             num_inf = len(dm[(dm["CODIGO_TECNICO_EXTRAIDO"] == tr) & (dm["FLAG_INFANCIA"] == "SIM")])
@@ -1416,15 +1480,15 @@ def tela_qualidade(dm, ds, f):
                         num_inf += 1
             den_inf = len(inst_tec)
         taxa_inf = round(num_inf / den_inf * 100, 1) if den_inf > 0 else 0.0
-        
+
         nome = atv["NOME_TEC"].iloc[0] if len(atv) > 0 else ""
-        
+
         c_prod = _cls_prod(media_diaria)
         c_efic = _cls_efic(efi)
         c_rep  = _cls_rep(taxa_rep)
         c_inf  = _cls_inf(taxa_inf)
         nota   = _nota_total(c_prod, c_efic, c_rep, c_inf)
-        
+
         dados_tec.append({
             "TR": tr,
             "Nome": nome,
@@ -1438,14 +1502,14 @@ def tela_qualidade(dm, ds, f):
         })
 
     df_qual = pd.DataFrame(dados_tec).sort_values("Nota", ascending=False)
-    
+
     media_equipe = {
         "Produtividade": round(df_qual["Prod. Média"].mean(), 1) if not df_qual.empty else 0,
         "Eficácia": round(df_qual["Eficácia (%)"].mean(), 1) if not df_qual.empty else 0,
         "Repetidos (%)": round(df_qual["Repetidos (%)"].mean(), 1) if not df_qual.empty else 0,
         "Infância (%)": round(df_qual["Infância (%)"].mean(), 1) if not df_qual.empty else 0,
     }
-    
+
     cols = st.columns(4)
     for col, (metrica, valor, sub, cls) in zip(cols, [
         ("Prod. Média", f"{media_equipe['Produtividade']}", "atividades/dia", "kpi-blue"),
@@ -1455,7 +1519,7 @@ def tela_qualidade(dm, ds, f):
     ]):
         col.markdown(_kpi(metrica, valor, sub, cls), unsafe_allow_html=True)
     st.write("")
-    
+
     _sec("Ranking de Qualidade por Técnico")
     st.markdown("""
     <div style="font-size:11px;color:#64748b;margin-bottom:10px">
@@ -1464,7 +1528,7 @@ def tela_qualidade(dm, ds, f):
         <b>Legenda cores:</b> <span style="color:#1e3a5f;font-weight:700">≥13</span> • <span style="color:#16a34a;font-weight:700">9-12</span> • <span style="color:#d97706;font-weight:700">5-8</span> • <span style="color:#dc2626;font-weight:700">&lt;5</span>
     </div>
     """, unsafe_allow_html=True)
-    
+
     st.dataframe(
         df_qual[["TR", "Nome", "Prod. Média", "Eficácia (%)", "Repetidos (%)", "Infância (%)", "Nota", "Status", "Status_Texto"]],
         column_config={
@@ -1481,7 +1545,7 @@ def tela_qualidade(dm, ds, f):
         use_container_width=True,
         hide_index=True
     )
-    
+
     _sec("Distribuição da Nota de Qualidade")
     df_graf = df_qual.sort_values("Nota")
     cores = [_cor_nota(n) for n in df_graf["Nota"]]
