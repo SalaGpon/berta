@@ -229,6 +229,10 @@ C = {
     "purple": "#7c3aed",
 }
 
+# Cores azul royal padronizadas para todos os gráficos
+ROYAL = "#1e3a5f"          # azul marinho (dark royal)
+ROYAL_LIGHT = "#4a7db5"    # azul mais claro para linhas/secundário
+
 _LYT = dict(
     paper_bgcolor=C["paper"],
     plot_bgcolor=C["bg"],
@@ -245,7 +249,6 @@ _LYT = dict(
 
 @st.cache_data(ttl=300, show_spinner=False)
 def carregar_base_repositorio():
-    """Carrega o BASEBOT.csv do repositório (API), com detecção automática do separador."""
     try:
         token = st.secrets.get("GITHUB_TOKEN", "")
         if not token:
@@ -312,7 +315,6 @@ def carregar_base_repositorio():
 
 @st.cache_data(ttl=300)
 def carregar_base_local():
-    """Fallback para arquivo local (apenas desenvolvimento)."""
     if not CAMINHO_BASE_LOCAL:
         return None
     try:
@@ -334,7 +336,6 @@ def carregar_base_local():
 
 
 def carregar_base():
-    """Orquestra o carregamento do BASEBOT.csv."""
     df = carregar_base_repositorio()
     if df is None:
         df = carregar_base_local()
@@ -344,7 +345,6 @@ def carregar_base():
 
 
 def _processar_df(df):
-    """Normaliza e cria colunas derivadas."""
     df.columns = df.columns.str.strip()
 
     col_fim = "DH_FIM_EXEC_REAL"
@@ -423,7 +423,6 @@ def _processar_df(df):
     else:
         df["CDOE"] = df["CDOE"].fillna("")
 
-    # Endereço
     if "LOGRADOURO" in df.columns:
         df["Logradouro"] = df["LOGRADOURO"].fillna("")
     if "NUMERO" in df.columns:
@@ -549,9 +548,9 @@ def _ev_dual(x, bars, line, bcolor, titulo, h=300, meta=None):
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_bar(x=x, y=bars, name="Qtd", marker_color=bcolor)
     fig.add_scatter(x=x, y=line, name="Taxa%", mode="lines+markers",
-                    line=dict(color=C["yellow"], width=2), marker_size=6, secondary_y=True)
+                    line=dict(color=ROYAL_LIGHT, width=2), marker_size=6, secondary_y=True)
     if meta is not None:
-        fig.add_hline(y=meta, line_dash="dash", line_color=C["red"],
+        fig.add_hline(y=meta, line_dash="dash", line_color=C["yellow"],
                       annotation_text=f"Meta {meta}%", secondary_y=True)
     fig.update_layout(**_lyt(titulo, h))
     fig.update_yaxes(showgrid=False, secondary_y=True)
@@ -669,8 +668,8 @@ def tela_producao(dm, ds, f):
     prod["Dia"]   = pd.to_datetime(prod["DIA_FIM"]).dt.strftime("%d/%m")
 
     fig = go.Figure()
-    fig.add_bar(x=prod["Dia"], y=prod["Inst"], name="INST", marker_color=C["navy"])
-    fig.add_bar(x=prod["Dia"], y=prod["Rep"],  name="REP",  marker_color=C["purple"])
+    fig.add_bar(x=prod["Dia"], y=prod["Inst"], name="INST", marker_color=ROYAL)
+    fig.add_bar(x=prod["Dia"], y=prod["Rep"],  name="REP",  marker_color=ROYAL_LIGHT)
     fig.update_layout(barmode="stack", showlegend=True, **_lyt("Producao Diaria - INST + REP", 320))
     st.plotly_chart(fig, use_container_width=True)
 
@@ -689,14 +688,14 @@ def tela_producao(dm, ds, f):
         st.markdown("**Top 5 — Maior Producao**")
         t5 = pt.head(5)
         st.plotly_chart(
-            _bar_h(t5["NOME_TEC"], t5["Prod"], C["green"],
+            _bar_h(t5["NOME_TEC"], t5["Prod"], ROYAL,
                    labels=t5["CODIGO_TECNICO_EXTRAIDO"], h=260),
             use_container_width=True)
     with c2:
         st.markdown("**Top 5 — Menor Producao**")
         b5 = pt.tail(5).sort_values("Prod")
         st.plotly_chart(
-            _bar_h(b5["NOME_TEC"], b5["Prod"], C["yellow"],
+            _bar_h(b5["NOME_TEC"], b5["Prod"], ROYAL_LIGHT,
                    labels=b5["CODIGO_TECNICO_EXTRAIDO"], h=260),
             use_container_width=True)
 
@@ -716,14 +715,14 @@ def tela_producao(dm, ds, f):
         suc_sc["AW"] = suc_sc["ANO_FIM"].astype(str)+"-S"+suc_sc["SEM_FIM"].astype(str).str.zfill(2)
         ev = suc_sc.groupby("AW").size().reset_index(name="T").sort_values("AW").tail(12)
         fig2 = go.Figure(go.Scatter(x=ev["AW"],y=ev["T"],mode="lines+markers",
-                                    line=dict(color=C["navy"],width=2),marker_size=7))
+                                    line=dict(color=ROYAL,width=2),marker_size=7, marker_color=ROYAL))
         fig2.update_layout(**_lyt("Producao Semanal - ultimas 12 semanas",300))
         st.plotly_chart(fig2, use_container_width=True)
     with tab2:
         ev2 = suc_sc.groupby("MES_FIM").size().reset_index(name="T")
         ev2["MES_FIM"] = ev2["MES_FIM"].astype(str)
         ev2 = ev2.sort_values("MES_FIM").tail(12)
-        fig3 = go.Figure(go.Bar(x=ev2["MES_FIM"],y=ev2["T"],marker_color=C["navy"]))
+        fig3 = go.Figure(go.Bar(x=ev2["MES_FIM"],y=ev2["T"],marker_color=ROYAL))
         fig3.update_layout(**_lyt("Producao Mensal",300))
         st.plotly_chart(fig3, use_container_width=True)
 
@@ -752,7 +751,6 @@ def tela_repetidos(dm, ds, f):
 
     def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
 
-    # Tabela por técnico
     if tem_vip:
         den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
             Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else ""),
@@ -814,7 +812,6 @@ def tela_repetidos(dm, ds, f):
 
     if tem_vip and not num_df.empty:
         _sec("Detalhamento — Repetidos (VIP)")
-        # Construir endereço composto
         num_df["Endereço"] = ""
         if "Logradouro" in num_df.columns:
             num_df["Endereço"] = num_df["Logradouro"].fillna("").astype(str)
@@ -834,33 +831,36 @@ def tela_repetidos(dm, ds, f):
         }, inplace=True)
         st.dataframe(det, use_container_width=True, hide_index=True)
 
-        # Gráficos adicionais
         st.divider()
 
-        # Repetidos por dia
+        # Repetidos por dia + linha de tendência
         _sec("Repetidos por Dia do Mês")
         if "DIA_FIM" in num_df.columns:
             diario = num_df.groupby("DIA_FIM").size().reset_index(name="Repetidos")
             diario["Dia"] = pd.to_datetime(diario["DIA_FIM"]).dt.strftime("%d/%m")
-            fig_dia = go.Figure(go.Bar(x=diario["Dia"], y=diario["Repetidos"],
-                                       marker_color=C["red"], name="Repetidos por dia"))
+            fig_dia = make_subplots(specs=[[{"secondary_y": False}]])
+            fig_dia.add_bar(x=diario["Dia"], y=diario["Repetidos"], name="Repetidos", marker_color=ROYAL)
+            fig_dia.add_scatter(x=diario["Dia"], y=diario["Repetidos"], mode="lines+markers",
+                                line=dict(color=ROYAL_LIGHT, width=2), marker=dict(size=6, color=ROYAL_LIGHT),
+                                name="Tendência")
             fig_dia.update_layout(**_lyt("", 300))
+            fig_dia.update_yaxes(title_text="Quantidade")
             st.plotly_chart(fig_dia, use_container_width=True)
         else:
             st.info("Dados insuficientes para gráfico diário.")
 
-        # Pareto de causas (usando Descrição)
+        # Pareto de causas (top 15)
         _sec("Pareto de Causas dos Repetidos")
         causas = num_df.groupby("Descrição").size().reset_index(name="Qtd")
-        causas = causas.sort_values("Qtd", ascending=False)
+        causas = causas.sort_values("Qtd", ascending=False).head(15)
         causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
         causas["Acum"] = causas["Perc"].cumsum()
         fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
         fig_causas.add_bar(x=causas["Descrição"], y=causas["Qtd"],
-                           name="Ocorrências", marker_color=C["red"])
+                           name="Ocorrências", marker_color=ROYAL)
         fig_causas.add_scatter(x=causas["Descrição"], y=causas["Acum"],
                                name="% Acumulado", mode="lines+markers",
-                               line=dict(color=C["yellow"], width=2), secondary_y=True)
+                               line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
         fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
         fig_causas.update_yaxes(showgrid=False, secondary_y=True)
         st.plotly_chart(fig_causas, use_container_width=True)
@@ -872,10 +872,10 @@ def tela_repetidos(dm, ds, f):
         pareto_tec["Acum"] = pareto_tec["Perc"].cumsum()
         fig_tec = make_subplots(specs=[[{"secondary_y": True}]])
         fig_tec.add_bar(x=pareto_tec["Nome"], y=pareto_tec["Repetidos"],
-                        name="Repetidos", marker_color=C["purple"])
+                        name="Repetidos", marker_color=ROYAL)
         fig_tec.add_scatter(x=pareto_tec["Nome"], y=pareto_tec["Acum"],
                             name="% Acumulado", mode="lines+markers",
-                            line=dict(color=C["yellow"], width=2), secondary_y=True)
+                            line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
         fig_tec.update_layout(**_lyt("Pareto de Técnicos", 400))
         fig_tec.update_yaxes(showgrid=False, secondary_y=True)
         st.plotly_chart(fig_tec, use_container_width=True)
@@ -1029,6 +1029,61 @@ def tela_infancia(dm, ds, f):
             "inf_tecnico_filho":"Tec. que Reparou"}, inplace=True)
         st.dataframe(det, use_container_width=True, hide_index=True)
 
+        st.divider()
+
+        # Infância por dia do mês + linha de tendência
+        _sec("Infância por Dia do Mês")
+        if "DIA_FIM" in inf.columns:
+            diario = inf.groupby("DIA_FIM").size().reset_index(name="Infancia")
+            diario["Dia"] = pd.to_datetime(diario["DIA_FIM"]).dt.strftime("%d/%m")
+            fig_dia = make_subplots(specs=[[{"secondary_y": False}]])
+            fig_dia.add_bar(x=diario["Dia"], y=diario["Infancia"], name="Infância", marker_color=ROYAL)
+            fig_dia.add_scatter(x=diario["Dia"], y=diario["Infancia"], mode="lines+markers",
+                                line=dict(color=ROYAL_LIGHT, width=2), marker=dict(size=6, color=ROYAL_LIGHT),
+                                name="Tendência")
+            fig_dia.update_layout(**_lyt("", 300))
+            fig_dia.update_yaxes(title_text="Quantidade")
+            st.plotly_chart(fig_dia, use_container_width=True)
+        else:
+            st.info("Dados insuficientes para gráfico diário.")
+
+        # Pareto de causas (top 15) – usando os reparos associados
+        _sec("Pareto de Causas da Infância")
+        sas = inf["SA_REPARO_INFANCIA"].dropna().unique() if "SA_REPARO_INFANCIA" in inf.columns else []
+        rows = ds[ds["Número SA"].isin(sas)] if len(sas) else pd.DataFrame()
+        if not rows.empty and "Descrição" in rows.columns:
+            causas = rows["Descrição"].value_counts().head(15).reset_index()
+            causas.columns = ["Causa","Qtd"]
+            causas["Causa"] = causas["Causa"].str[:50] + "..." 
+            causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
+            causas["Acum"] = causas["Perc"].cumsum()
+            fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
+            fig_causas.add_bar(x=causas["Causa"], y=causas["Qtd"],
+                               name="Ocorrências", marker_color=ROYAL)
+            fig_causas.add_scatter(x=causas["Causa"], y=causas["Acum"],
+                                   name="% Acumulado", mode="lines+markers",
+                                   line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
+            fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
+            fig_causas.update_yaxes(showgrid=False, secondary_y=True)
+            st.plotly_chart(fig_causas, use_container_width=True)
+        else:
+            st.info("Sem dados de causa dos reparos de infância.")
+
+        # Pareto por técnico (infância)
+        _sec("Pareto de Técnicos — Infância")
+        pareto_tec = tb[["Nome","TR","Infancia"]].sort_values("Infancia", ascending=False)
+        pareto_tec["Perc"] = (pareto_tec["Infancia"] / pareto_tec["Infancia"].sum() * 100).round(1)
+        pareto_tec["Acum"] = pareto_tec["Perc"].cumsum()
+        fig_tec = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_tec.add_bar(x=pareto_tec["Nome"], y=pareto_tec["Infancia"],
+                        name="Infância", marker_color=ROYAL)
+        fig_tec.add_scatter(x=pareto_tec["Nome"], y=pareto_tec["Acum"],
+                            name="% Acumulado", mode="lines+markers",
+                            line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
+        fig_tec.update_layout(**_lyt("Pareto de Técnicos", 400))
+        fig_tec.update_yaxes(showgrid=False, secondary_y=True)
+        st.plotly_chart(fig_tec, use_container_width=True)
+
 
 def tela_calendario(df, ds, f):
     import calendar as _cal
@@ -1150,9 +1205,9 @@ def tela_calendario(df, ds, f):
     ef_dia = pd.DataFrame(ef_list)
 
     fig = go.Figure()
-    fig.add_bar(x=ef_dia["DIA"].astype(str), y=ef_dia["Concluidos"], name="Concluidos", marker_color=C["navy"], yaxis="y")
+    fig.add_bar(x=ef_dia["DIA"].astype(str), y=ef_dia["Concluidos"], name="Concluidos", marker_color=ROYAL, yaxis="y")
     fig.add_scatter(x=ef_dia["DIA"].astype(str), y=ef_dia["Eficacia%"], name="Eficacia%", mode="lines+markers",
-                    line=dict(color=C["green"],width=2), marker_size=6, yaxis="y2")
+                    line=dict(color=ROYAL_LIGHT,width=2), marker_size=6, yaxis="y2")
     fig.add_hline(y=85, line_dash="dash", line_color=C["yellow"], annotation_text="Meta 85%", yref="y2")
     fig.update_layout(
         **_lyt(f"Producao e Eficacia — {lbl_mes}", 320),
@@ -1426,11 +1481,9 @@ def _html_ata_qualidade(nome, codigo, supervisor, mes_ref,
                         prod_val, efic_val, rep_val, inf_val,
                         prod_cls, efic_cls, rep_cls, inf_cls, nota):
     nota_max = 16
-    # Título fixo centralizado
     titulo = "ATA DE DESEMPENHO OPERACIONAL"
     cor_h = "135deg,#1e3a5f 0%,#2563eb 100%"
     
-    # Mensagem varia conforme a nota
     if nota >= 13:
         msg = (f"Prezado(a) <strong>{nome}</strong>, seu desempenho no periodo foi "
                f"excepcional. Todos os indicadores estao dentro ou acima das metas. Continue assim!")
@@ -1720,7 +1773,7 @@ def tela_qualidade(dm, ds, f):
         col.markdown(_kpi(lbl, val, "", cls), unsafe_allow_html=True)
 
     st.write("")
-    st.write("")  # espaço extra para evitar sobreposição
+    st.write("")
     with st.expander("📋 Regras de classificacao", expanded=False):
         st.markdown("""| Indicador | 🏆 Excelente | 🟢 Parabens / Otimo | 🟡 Atencao | 🔴 Precisa Melhorar |
 |---|---|---|---|---|
@@ -1797,7 +1850,7 @@ def tela_qualidade(dm, ds, f):
     _sec("Distribuicao de Classificacoes por Indicador")
 
     _cats  = ["EXCELENTE", "OTIMO", "PARABENS", "ATENCAO", "PRECISA MELHORAR", "S/D"]
-    _cores = ["#1e3a5f",   "#15803d","#16a34a", "#d97706", "#dc2626",           "#94a3b8"]
+    _cores = ["#1e3a5f",   "#2d5a8e", "#4a7db5", "#6b9bd2", "#a0c4ff",           "#94a3b8"]
     _inds  = ["prod_cls",  "efic_cls","rep_cls", "inf_cls"]
     _lbls  = ["Produtividade","Eficacia","Repetida","Infancia"]
 
@@ -1823,7 +1876,6 @@ def tela_qualidade(dm, ds, f):
     fig_dist.update_layout(layout_dist)
     st.plotly_chart(fig_dist, use_container_width=True)
 
-    # ── Geração de Atas inline ──
     _sec("Gerar Atas de Qualidade — Assinatura Digital")
     st.caption("Clique em 📄 ATA para abrir o formulário de assinatura logo abaixo.")
 
@@ -1836,7 +1888,6 @@ def tela_qualidade(dm, ds, f):
 
     sup_nome = f.get("supervisor", "N/I") or "N/I"
 
-    # Inicializa a ata selecionada no estado
     if "ata_html" not in st.session_state:
         st.session_state.ata_html = None
         st.session_state.ata_nome = ""
@@ -1892,7 +1943,6 @@ def tela_qualidade(dm, ds, f):
                 st.session_state.ata_nome = r["nome"]
                 st.rerun()
 
-    # Exibe a ata logo abaixo, se houver uma ativa
     if st.session_state.ata_html:
         st.markdown(f"**📝 Assinatura de {st.session_state.ata_nome}**")
         st.components.v1.html(st.session_state.ata_html, height=900, scrolling=True)
