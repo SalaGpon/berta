@@ -1372,7 +1372,7 @@ def tela_diario(df, ds, f):
 
 
 # =============================================================================
-# 8. TELA QUALIDADE (COMPLETA)
+# 8. TELA QUALIDADE (COMPLETA + ATA)
 # =============================================================================
 
 def _cls_prod(v):
@@ -1413,6 +1413,109 @@ def _cor_nota(nota):
     if nota >= 5:  return "#d97706"
     return "#dc2626"
 
+def _gerar_ata_qualidade(df_qual, supervisor, mes):
+    """Gera HTML completo da ATA de Qualidade."""
+    import base64
+    logo_url = "https://raw.githubusercontent.com/SalaGpon/Berta-bot/main/assets/logo.png"
+    try:
+        logo = base64.b64encode(requests.get(logo_url).content).decode()
+    except:
+        logo = ""
+
+    rows_html = ""
+    for _, row in df_qual.iterrows():
+        tr = row["TR"]
+        nome = row["Nome"]
+        prod = row["Prod. Média"]
+        efic = row["Eficácia (%)"]
+        rep = row["Repetidos (%)"]
+        inf = row["Infância (%)"]
+        nota = row["Nota"]
+        status = row["Status"]
+        status_texto = row["Status_Texto"]
+        cor_nota = _cor_nota(nota)
+        rows_html += f"""
+        <tr>
+            <td>{nome}</td>
+            <td>{tr}</td>
+            <td style="text-align:center">{prod}</td>
+            <td style="text-align:center">{efic}%</td>
+            <td style="text-align:center">{rep}%</td>
+            <td style="text-align:center">{inf}%</td>
+            <td style="text-align:center;font-weight:bold;color:{cor_nota};font-size:16px">{nota}</td>
+            <td style="text-align:center;font-size:18px">{status}</td>
+            <td style="text-align:center;font-size:12px">{status_texto}</td>
+        </tr>"""
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>ATA de Qualidade - {mes} - {supervisor}</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+            body {{ font-family: 'Inter', sans-serif; margin: 20px; }}
+            h1, h2, h3 {{ color: #1e3a5f; }}
+            .header {{ text-align: center; margin-bottom: 30px; }}
+            .header img {{ height: 60px; margin-bottom: 10px; }}
+            .team-info {{ display: flex; justify-content: space-between; margin-bottom: 20px; }}
+            .team-info div {{ background: #f0f4f8; padding: 10px 20px; border-radius: 8px; }}
+            table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+            th {{ background: #1e3a5f; color: white; padding: 8px; }}
+            td {{ border-bottom: 1px solid #e0e0e0; padding: 8px; }}
+            .signature {{ margin-top: 40px; display: flex; justify-content: space-between; }}
+            .signature-line {{ border-top: 1px solid #333; width: 200px; text-align: center; padding-top: 5px; }}
+            @media print {{ body {{ margin: 0; }} }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <img src="data:image/png;base64,{logo}" alt="Logo" onerror="this.style.display='none'">
+            <h1>ATA DE QUALIDADE OPERACIONAL</h1>
+            <h2>{mes} | Equipe {supervisor if supervisor else 'Todos'}</h2>
+        </div>
+        <div class="team-info">
+            <div>Total de técnicos avaliados: {len(df_qual)}</div>
+            <div>Período: {mes}</div>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Técnico</th>
+                    <th>TR</th>
+                    <th>Prod./Dia</th>
+                    <th>Eficácia</th>
+                    <th>Repetidos</th>
+                    <th>Infância</th>
+                    <th>Nota</th>
+                    <th>Status</th>
+                    <th>Detalhe</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows_html}
+            </tbody>
+        </table>
+        <div class="signature">
+            <div>
+                <div class="signature-line">Supervisor</div>
+                <div style="margin-top:5px">{supervisor if supervisor else 'Supervisor'}</div>
+            </div>
+            <div>
+                <div class="signature-line">Coordenador</div>
+                <div style="margin-top:5px"></div>
+            </div>
+            <div>
+                <div class="signature-line">Data</div>
+                <div style="margin-top:5px">{datetime.today().strftime('%d/%m/%Y')}</div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
 
 def tela_qualidade(dm, ds, f):
     _header("🏆", "Qualidade", f)
@@ -1430,7 +1533,6 @@ def tela_qualidade(dm, ds, f):
 
         dias = atv["DIA_FIM"].nunique()
         media_diaria = round(len(suc) / dias, 1) if dias > 0 else 0.0
-
         efi = round(len(suc) / len(tot) * 100, 1) if len(tot) > 0 else 0.0
 
         # Repetidos
@@ -1499,15 +1601,25 @@ def tela_qualidade(dm, ds, f):
             "Nota": nota,
             "Status": f"{c_prod[1]}{c_efic[1]}{c_rep[1]}{c_inf[1]}",
             "Status_Texto": f"{c_prod[0]} | {c_efic[0]} | {c_rep[0]} | {c_inf[0]}",
+            # Campos extras para visão completa
+            "Total OS": len(tot),
+            "Sucesso": len(suc),
+            "Dias Trab.": dias,
+            "Reparos Realizados": den_rep,
+            "Repetidos (Filhos)": num_rep,
+            "Instalações": len(dm[(dm["Macro Atividade"] == "INST-FTTH") &
+                                  (dm["CODIGO_TECNICO_EXTRAIDO"] == tr)]),
+            "Infância (Ocorrências)": num_inf,
         })
 
     df_qual = pd.DataFrame(dados_tec).sort_values("Nota", ascending=False)
 
+    # KPIs da equipe
     media_equipe = {
-        "Produtividade": round(df_qual["Prod. Média"].mean(), 1) if not df_qual.empty else 0,
-        "Eficácia": round(df_qual["Eficácia (%)"].mean(), 1) if not df_qual.empty else 0,
-        "Repetidos (%)": round(df_qual["Repetidos (%)"].mean(), 1) if not df_qual.empty else 0,
-        "Infância (%)": round(df_qual["Infância (%)"].mean(), 1) if not df_qual.empty else 0,
+        "Produtividade": round(df_qual["Prod. Média"].mean(), 1),
+        "Eficácia": round(df_qual["Eficácia (%)"].mean(), 1),
+        "Repetidos (%)": round(df_qual["Repetidos (%)"].mean(), 1),
+        "Infância (%)": round(df_qual["Infância (%)"].mean(), 1),
     }
 
     cols = st.columns(4)
@@ -1520,12 +1632,12 @@ def tela_qualidade(dm, ds, f):
         col.markdown(_kpi(metrica, valor, sub, cls), unsafe_allow_html=True)
     st.write("")
 
+    # Ranking principal
     _sec("Ranking de Qualidade por Técnico")
     st.markdown("""
     <div style="font-size:11px;color:#64748b;margin-bottom:10px">
         <b>Critérios:</b> 🏆 Excelente (4pts) • 🟢 Bom (3pts) • 🟡 Atenção (2pts) • 🟠 Ruim (1pt) • 🔴 Crítico (0pts)<br>
-        <b>Nota final:</b> soma dos pontos nos quatro pilares (máx. 16).<br>
-        <b>Legenda cores:</b> <span style="color:#1e3a5f;font-weight:700">≥13</span> • <span style="color:#16a34a;font-weight:700">9-12</span> • <span style="color:#d97706;font-weight:700">5-8</span> • <span style="color:#dc2626;font-weight:700">&lt;5</span>
+        <b>Nota final:</b> soma dos pontos nos quatro pilares (máx. 16).
     </div>
     """, unsafe_allow_html=True)
 
@@ -1546,6 +1658,21 @@ def tela_qualidade(dm, ds, f):
         hide_index=True
     )
 
+    # Visão completa (detalhada)
+    _sec("Visão Completa dos Técnicos")
+    with st.expander("📋 Clique para ver todos os detalhes"):
+        st.dataframe(
+            df_qual[[
+                "Nome", "TR", "Total OS", "Sucesso", "Dias Trab.",
+                "Reparos Realizados", "Repetidos (Filhos)",
+                "Instalações", "Infância (Ocorrências)",
+                "Prod. Média", "Eficácia (%)", "Repetidos (%)", "Infância (%)", "Nota", "Status"
+            ]],
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # Distribuição da nota (gráfico)
     _sec("Distribuição da Nota de Qualidade")
     df_graf = df_qual.sort_values("Nota")
     cores = [_cor_nota(n) for n in df_graf["Nota"]]
@@ -1560,6 +1687,18 @@ def tela_qualidade(dm, ds, f):
     ))
     fig.update_layout(**_lyt("", 400))
     st.plotly_chart(fig, use_container_width=True)
+
+    # ATA de Qualidade
+    st.divider()
+    st.subheader("📄 ATA de Qualidade")
+    st.markdown("Gere um documento oficial com o resultado da avaliação mensal da equipe.")
+
+    if st.button("Gerar ATA de Qualidade"):
+        supervisor_nome = f.get("supervisor", "Todos")
+        mes_ref = f.get("mes", "")
+        ata_html = _gerar_ata_qualidade(df_qual, supervisor_nome, mes_ref)
+        st.components.v1.html(ata_html, height=800, scrolling=True)
+        st.info("Para imprimir e assinar, use o menu do navegador (Ctrl+P).")
 
 
 # =============================================================================
