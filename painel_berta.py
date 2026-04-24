@@ -3,20 +3,19 @@
 """
 BERTA — Painel Operacional do Supervisor v3.2 (W)
 Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario
-Fonte de dados: GitHub raw (principal) → Supabase Storage → arquivo local
-Indicadores alinhados com o bot Telegram (TEC_ANTERIOR / FLAG_REPETIDO)
+Fonte de dados: GitHub API → upload manual → arquivo local
 """
 
 import os
 import re
 import base64
-import uuid
+import io
 import requests
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta
 import streamlit as st
 
 # =============================================================================
@@ -224,38 +223,7 @@ div[data-testid="stVerticalBlock"] {
 # 3. CONSTANTES
 # =============================================================================
 
-# ── Credenciais — tenta chave.py, fallback para env / st.secrets ─────────────
-try:
-    from chave import SUPABASE_URL, SUPABASE_KEY
-except ImportError:
-    SUPABASE_URL = os.getenv("SUPABASE_URL", "https://bfamfgjjitrfcdyzuibd.supabase.co")
-    SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-    if not SUPABASE_KEY:
-        try:
-            SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-        except Exception:
-            st.warning("SUPABASE_KEY nao configurada. Crie chave.py, defina a variavel de ambiente ou use st.secrets.")
-            SUPABASE_KEY = ""
-SUPABASE_HDR = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-}
-
-# ==========================================================
-# SUPABASE STORAGE — fonte do BASEBOT.csv (fallback)
-# ==========================================================
-SUPABASE_STORAGE_URL = (
-    f"{SUPABASE_URL}/storage/v1/object/public/berta/BASEBOT.csv"
-)
-
-# ==========================================================
-# GitHub raw — fonte principal do BASEBOT.csv
-# ==========================================================
-GITHUB_BASE_URL = (
-    "https://raw.githubusercontent.com/SalaGpon/Berta-bot/main/BASEBOT.csv"
-)
-
-# Fallback local (desenvolvimento)
+# Caminho do arquivo local (apenas para desenvolvimento)
 _DIR = os.path.dirname(os.path.abspath(__file__))
 CAMINHO_BASE_LOCAL = next(
     (p for p in [
@@ -265,7 +233,7 @@ CAMINHO_BASE_LOCAL = next(
     None,
 )
 
-# Cores para graficos — tema branco
+# Cores para gráficos
 C = {
     "bg":     "#ffffff",
     "paper":  "#ffffff",
@@ -291,75 +259,76 @@ _LYT = dict(
 )
 
 # =============================================================================
-# 4. DADOS
+# 4. DADOS – CARREGAMENTO
 # =============================================================================
 
-@st.cache_data(ttl=300)
-def ultima_atualizacao_base():
-    """Retorna data/hora da ultima atualizacao do BASEBOT.csv no Supabase Storage."""
-    try:
-        url = f"{SUPABASE_URL}/storage/v1/object/info/public/berta/BASEBOT.csv"
-        r = requests.get(url, headers=SUPABASE_HDR, timeout=10)
-        if r.status_code == 200:
-            info = r.json()
-            updated = info.get("updated_at") or info.get("created_at", "")
-            if updated:
-                dt = pd.to_datetime(updated, utc=True).tz_convert("America/Sao_Paulo")
-                return dt.strftime("%d/%m/%Y %H:%M")
-    except Exception:
-        pass
-    return None
-
-
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def carregar_base(_dummy=None):
     """
-    Carrega BASEBOT.csv na seguinte ordem:
-    1. GitHub raw
-    2. Supabase Storage
-    3. Arquivo local
+    Carrega o BASEBOT.csv.
+    Ordem de tentativa:
+    1. via GitHub API (token GITHUB_TOKEN obrigatório nas secrets)
+    2. upload manual na barra lateral
+    3. arquivo local (desenvolvimento)
     """
+    import base64
     import io
 
-    # ── Tentativa 1: GitHub raw ─────────────────────────────────
+    # ---------- 1. GitHub API ----------
     try:
-        r = requests.get(GITHUB_BASE_URL, timeout=90)
-        if r.status_code == 200:
-            texto = r.content.decode("utf-8-sig", errors="replace")
-            df = pd.read_csv(io.StringIO(texto), sep=";", dtype=str, low_memory=False)
-            if len(df) > 0:
-                st.success("✅ Base carregada do GitHub")
-                return _processar_df(df)
-            st.warning("Base do GitHub veio vazia — tentando Supabase...")
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        if not token:
+            st.warning("🔑 Token GITHUB_TOKEN não configurado nas secrets. Tentando outras opções...")
         else:
-            st.warning(f"GitHub: HTTP {r.status_code} — tentando Supabase...")
-    except requests.exceptions.Timeout:
-        st.warning("Timeout ao baixar base do GitHub — tentando Supabase...")
+            headers = {"Authorization": f"token {token}"}
+            # Obter metadados (sha)
+            meta_url = "https://api.github.com/repos/SalaGpon/Berta-bot/contents/BASEBOT.csv"
+            meta = requests.get(meta_url, headers=headers, timeout=30)
+            if meta.status_code == 200:
+                sha = meta.json().get("sha")
+                blob_url = f"https://api.github.com/repos/SalaGpon/Berta-bot/git/blobs/{sha}"
+                blob_resp = requests.get(blob_url, headers=headers, timeout=60)
+                if blob_resp.status_code == 200:
+                    b64_content = blob_resp.json().get("content")
+                    if b64_content:
+                        texto = base64.b64decode(b64_content).decode("utf-8-sig", errors="replace")
+                        df = pd.read_csv(io.StringIO(texto), sep=";", dtype=str, low_memory=False)
+                        if len(df) > 0:
+                            st.success("✅ Base carregada do GitHub (API)")
+                            return _processar_df(df)
+                        else:
+                            st.warning("GitHub: arquivo vazio.")
+                    else:
+                        st.warning("GitHub: conteúdo não encontrado no blob.")
+                else:
+                    st.warning(f"GitHub Blob: HTTP {blob_resp.status_code}")
+            else:
+                st.warning(f"GitHub Meta: HTTP {meta.status_code}")
     except Exception as e:
-        st.warning(f"Erro GitHub: {e} — tentando Supabase...")
+        st.warning(f"Erro ao carregar do GitHub: {e}")
 
-    # ── Tentativa 2: Supabase Storage ───────────────────────────
-    try:
-        r = requests.get(SUPABASE_STORAGE_URL, timeout=90)
-        if r.status_code == 200:
-            texto = r.content.decode("utf-8-sig", errors="replace")
-            df = pd.read_csv(io.StringIO(texto), sep=";", dtype=str, low_memory=False)
+    # ---------- 2. Upload manual ----------
+    with st.sidebar:
+        uploaded_file = st.file_uploader(
+            "📂 Ou envie o BASEBOT.csv",
+            type=["csv"],
+            key="manual_upload",
+            help="Carregue o arquivo manualmente caso o download automático falhe."
+        )
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(uploaded_file, sep=";", dtype=str, low_memory=False)
             if len(df) > 0:
-                st.success("✅ Base carregada do Supabase Storage")
+                st.success("✅ Base carregada do upload manual")
                 return _processar_df(df)
-            st.warning("Base do Supabase veio vazia — tentando arquivo local...")
-        else:
-            st.warning(f"Supabase Storage: HTTP {r.status_code} — tentando arquivo local...")
-    except requests.exceptions.Timeout:
-        st.warning("Timeout ao baixar base do Supabase — tentando arquivo local...")
-    except Exception as e:
-        st.warning(f"Erro Supabase Storage: {e} — tentando arquivo local...")
+            st.warning("Arquivo enviado está vazio.")
+        except Exception as e:
+            st.error(f"Erro ao ler arquivo enviado: {e}")
 
-    # ── Tentativa 3: arquivo local ──────────────────────────────
+    # ---------- 3. Arquivo local ----------
     if CAMINHO_BASE_LOCAL:
         try:
-            df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=";", encoding="utf-8-sig",
-                             dtype=str, low_memory=False)
+            df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=";", encoding="utf-8-sig", dtype=str, low_memory=False)
             st.success("✅ Base carregada do arquivo local")
             return _processar_df(df)
         except Exception as e:
@@ -369,9 +338,9 @@ def carregar_base(_dummy=None):
 
 
 def _processar_df(df):
-    """Normaliza e cria colunas derivadas no DataFrame carregado."""
+    """Normaliza e cria colunas derivadas."""
     df.columns = df.columns.str.strip()
-    df["FIM_DT"] = pd.to_datetime(df["Fim Execução"],    dayfirst=True, errors="coerce")
+    df["FIM_DT"] = pd.to_datetime(df["Fim Execução"], dayfirst=True, errors="coerce")
     df["AB_DT"]  = pd.to_datetime(df["Data de criação"], dayfirst=True, errors="coerce")
     df["Estado"]          = df["Estado"].str.strip().str.upper()
     df["Macro Atividade"] = df["Macro Atividade"].str.strip().str.upper()
@@ -385,7 +354,7 @@ def _processar_df(df):
     df["MES_AB"]  = df["AB_DT"].dt.to_period("M")
     df["SEM_AB"]  = df["AB_DT"].dt.isocalendar().week.astype("Int64")
 
-    # ── Colunas VIP — garantir presença mesmo que o CSV não as tenha (retrocompat.) ──
+    # Colunas VIP
     _vip_defaults = {
         "vip_flag_repetido"     : "NAO",
         "vip_flag_infancia"     : "NAO",
@@ -407,14 +376,14 @@ def _processar_df(df):
         else:
             df[col] = df[col].fillna(default)
 
-    # ── Flags operacionais — garantir presença mesmo em bases antigas ──────
+    # Flags operacionais
     if "FLAG_CONCLUIDO_SUCESSO" not in df.columns:
         df["FLAG_CONCLUIDO_SUCESSO"] = (
-            df["Estado"].str.upper().str.strip() == "CONCLUÍDO COM SUCESSO"
+            df["Estado"].str.upper() == "CONCLUÍDO COM SUCESSO"
         ).map({True: "SIM", False: "NAO"})
     if "FLAG_CONCLUIDO_SEM_SUCESSO" not in df.columns:
         df["FLAG_CONCLUIDO_SEM_SUCESSO"] = (
-            df["Estado"].str.upper().str.strip() == "CONCLUÍDO SEM SUCESSO"
+            df["Estado"].str.upper() == "CONCLUÍDO SEM SUCESSO"
         ).map({True: "SIM", False: "NAO"})
     if "CODIGO_TECNICO_EXTRAIDO" not in df.columns:
         df["CODIGO_TECNICO_EXTRAIDO"] = df["Técnico Atribuído"].apply(
@@ -441,59 +410,83 @@ def _processar_df(df):
         df["ALARMADO"] = "NAO"
     else:
         df["ALARMADO"] = df["ALARMADO"].fillna("NAO")
-    # CDOE — coluna trazida pelo berta_completoV.py via TERMINO_DIA
     if "CDOE" not in df.columns:
         df["CDOE"] = ""
     else:
         df["CDOE"] = df["CDOE"].fillna("")
-    # Logradouro — fallback para Logradouro_cli se vazio
+
     if "Logradouro" in df.columns and "Logradouro_cli" in df.columns:
         mask = df["Logradouro"].astype(str).str.strip().isin(["", "nan"])
         df.loc[mask, "Logradouro"] = df.loc[mask, "Logradouro_cli"]
     elif "Logradouro_cli" in df.columns:
         df["Logradouro"] = df["Logradouro_cli"]
 
-    # ═══════════════════════════════════════════════════════════
-    # GARANTIR COLUNAS ESPECÍFICAS (TEC_ANTERIOR, FLAG_REPETIDO, etc.)
-    # ═══════════════════════════════════════════════════════════
-    for col in ("TEC_ANTERIOR", "IF_DIAS"):
+    # Colunas usadas no cálculo de repetidos
+    for col in ("TEC_ANTERIOR", "IF_DIAS", "FLAG_REPETIDO", "FLAG_INFANCIA"):
         if col not in df.columns:
             df[col] = ""
 
     return df
 
 
-@st.cache_data(ttl=600)
-def carregar_equipes():
-    """Obtém equipes a partir da coluna SUPERVISOR do BASEBOT.csv."""
-    df = carregar_base()
-    if df is None:
-        return {}
-    eq = {}
-    for _, row in df.iterrows():
-        sup = str(row.get("SUPERVISOR", "")).strip()
-        if not sup or sup.upper() in ("", "NAN", "NONE"):
-            continue
-        sup = sup.title()
-        cod = str(row.get("TR", "")).strip().upper()
-        if not cod:
-            # Tenta extrair do TECNICO_EXECUTOR se TR vazio
-            cod = extrair_codigo_tecnico(row.get("TECNICO_EXECUTOR", ""))
-        if not cod:
-            continue
-        eq.setdefault(sup, [])
-        if cod not in eq[sup]:
-            eq[sup].append(cod)
-    return eq
-
-
 def extrair_codigo_tecnico(tecnico_str) -> str:
-    """Extrai código (TRxxx, TTxxx, TCxxx) de uma string."""
     try:
         m = re.search(r'(TR\d+|TT\d+|TC\d+)', str(tecnico_str).strip())
         return m.group(1).upper() if m else ""
     except:
         return ""
+
+
+@st.cache_data(ttl=600)
+def carregar_equipes():
+    """Obtém as equipes (Supervisor -> [TRs]) do BASEBOT.csv ou da planilha de presença."""
+    df = carregar_base()
+    equipes = {}
+    if df is not None:
+        for _, row in df.iterrows():
+            sup = str(row.get("SUPERVISOR", "")).strip()
+            if not sup or sup.upper() in ("", "NAN", "NONE"):
+                continue
+            sup = sup.title()
+            cod = str(row.get("TR", "")).strip().upper()
+            if not cod:
+                cod = extrair_codigo_tecnico(row.get("TECNICO_EXECUTOR", ""))
+            if not cod:
+                continue
+            equipes.setdefault(sup, [])
+            if cod not in equipes[sup]:
+                equipes[sup].append(cod)
+
+    # Fallback via planilha de presença
+    if not equipes:
+        st.info("Equipes não encontradas no BASEBOT.csv, tentando planilha de presença...")
+        try:
+            import openpyxl
+            url_presenca = "https://raw.githubusercontent.com/SalaGpon/Berta-bot/main/Presen%C3%A7a.xlsx"
+            r = requests.get(url_presenca, timeout=30)
+            if r.status_code == 200:
+                wb = openpyxl.load_workbook(io.BytesIO(r.content), read_only=True)
+                ws = wb.active
+                rows = list(ws.iter_rows(min_row=2, values_only=True))
+                if rows:
+                    headers = [cell.value for cell in ws[1]]
+                    tr_col = next((i for i, h in enumerate(headers) if h and "TR" in str(h).upper()), None)
+                    sup_col = next((i for i, h in enumerate(headers) if h and "SUPERVISOR" in str(h).upper()), None)
+                    if tr_col is not None and sup_col is not None:
+                        for row in rows:
+                            tr = str(row[tr_col]).strip().upper() if row[tr_col] else None
+                            sup = str(row[sup_col]).strip().title() if row[sup_col] else None
+                            if tr and sup:
+                                equipes.setdefault(sup, [])
+                                if tr not in equipes[sup]:
+                                    equipes[sup].append(tr)
+                wb.close()
+                if equipes:
+                    st.success("✅ Equipes carregadas da planilha de presença")
+        except Exception as e:
+            st.warning(f"Não foi possível carregar a planilha de presença: {e}")
+
+    return equipes
 
 
 # =============================================================================
@@ -548,8 +541,9 @@ def _ev_dual(x, bars, line, bcolor, titulo, h=300, meta=None):
     fig.update_yaxes(showgrid=False, secondary_y=True)
     return fig
 
+
 # =============================================================================
-# 6. SIDEBAR — keys fixas para nao resetar ao trocar tela
+# 6. SIDEBAR
 # =============================================================================
 
 def sidebar(df):
@@ -616,8 +610,10 @@ def _escopo(df, f):
         return df[df["CODIGO_TECNICO_EXTRAIDO"].isin(f["tecs_sup"])].copy()
     return df
 
+
 # =============================================================================
-# 7. TELA — PRODUCAO DIARIA (mantida)
+# 7. TELAS (todas preservadas, apenas as de repetidos e infância foram ajustadas
+#    anteriormente para usar VIP; mantemos as mesmas lógicas)
 # =============================================================================
 
 def tela_producao(dm, ds, f):
@@ -715,12 +711,111 @@ def tela_producao(dm, ds, f):
         st.plotly_chart(fig3, use_container_width=True)
 
 
-# =============================================================================
-# 8. TELA — REPETIDOS (CORRIGIDA COM TEC_ANTERIOR)
-# =============================================================================
+def tela_repetidos(dm, ds, f):
+    _header("🔁", "Repetidos", f)
+
+    tem_vip = ("TEC_ANTERIOR" in dm.columns) and ("FLAG_REPETIDO" in dm.columns)
+
+    den_df = dm[
+        (dm["Macro Atividade"] == "REP-FTTH") &
+        (dm["Estado"] == "CONCLUÍDO COM SUCESSO")
+    ]
+    den_total = len(den_df)
+
+    if tem_vip:
+        num_df = dm[
+            (dm["FLAG_REPETIDO"] == "SIM") &
+            (dm["TEC_ANTERIOR"].notna()) &
+            (dm["TEC_ANTERIOR"].str.strip() != "")
+        ]
+        repetidos_total = len(num_df)
+        fonte_label = "🏛️ Fonte: VIP Oficial (TEC_ANTERIOR + FLAG_REPETIDO)"
+    else:
+        # Fallback GPON
+        gpons_rep, den_total, _ = _calcular_repetidos_gpon(ds, f["mes"])
+        repetidos_total = len(gpons_rep)
+        num_df = pd.DataFrame()
+        fonte_label = "⚙️ Fonte: Cálculo Interno (GPON)"
+
+    taxa = round(repetidos_total / den_total * 100, 2) if den_total > 0 else 0
+
+    rep_ab = ds[ds["FLAG_REPETIDO_ABERTO"] == "SIM"] if "FLAG_REPETIDO_ABERTO" in ds.columns else pd.DataFrame()
+
+    if tem_vip:
+        rep_alrm = dm[(dm["FLAG_REPETIDO"] == "SIM") & (dm["ALARMADO"] == "SIM")]
+        rep_alrm_count = len(rep_alrm)
+    else:
+        rep_alrm_count = 0
+
+    cols = st.columns(5)
+    for col, (lb,vl,sb,cl) in zip(cols,[
+        ("Total Reparos", f"{den_total:,}",   "abertos no mes",  "kpi-blue"),
+        ("Repetidos",     f"{repetidos_total:,}",  "reparos filhos",  "kpi-red" if taxa>9 else "kpi-yellow"),
+        ("Taxa %",        f"{taxa}%",          "meta: <= 9%",     "kpi-red" if taxa>9 else "kpi-green"),
+        ("Em Garantia",   f"{len(rep_ab):,}",  "abertos 30d",     "kpi-yellow"),
+        ("Alarmados",     f"{rep_alrm_count}", "GPON alarmado",   "kpi-red" if rep_alrm_count>0 else "kpi-green"),
+    ]):
+        col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
+
+    st.markdown(
+        f'<div style="font-size:11px;color:#64748b;margin:6px 0 14px 2px;">{fonte_label}</div>',
+        unsafe_allow_html=True)
+
+    _sec("Indicador por Tecnico")
+    def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
+
+    if tem_vip:
+        den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+            Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else ""),
+            Total=("Número SA", "count")).reset_index()
+
+        num_tec = num_df.groupby("TEC_ANTERIOR").size().reset_index(name="Repetidos")
+        num_tec.rename(columns={"TEC_ANTERIOR": "CODIGO_TECNICO_EXTRAIDO"}, inplace=True)
+
+        tb = den_tec.merge(num_tec, on="CODIGO_TECNICO_EXTRAIDO", how="left")
+        tb["Repetidos"] = tb["Repetidos"].fillna(0).astype(int)
+        tb["Taxa%"] = (tb["Repetidos"] / tb["Total"].replace(0, 1) * 100).round(2)
+        tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
+        tb = tb.rename(columns={"CODIGO_TECNICO_EXTRAIDO": "TR"})
+    else:
+        den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+            Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else ""),
+            Total=("Número SA", "count")).reset_index()
+        rep_por_tec = {}
+        for gpon, info in gpons_rep.items():
+            tr = info.get("pai_tr", "")
+            if tr:
+                rep_por_tec[tr] = rep_por_tec.get(tr, 0) + 1
+        num_tec_df = pd.DataFrame(rep_por_tec.items(), columns=["CODIGO_TECNICO_EXTRAIDO", "Repetidos"]) if rep_por_tec else pd.DataFrame(columns=["CODIGO_TECNICO_EXTRAIDO", "Repetidos"])
+        tb = den_tec.merge(num_tec_df, on="CODIGO_TECNICO_EXTRAIDO", how="left")
+        tb["Repetidos"] = tb["Repetidos"].fillna(0).astype(int)
+        tb["Taxa%"] = (tb["Repetidos"] / tb["Total"].replace(0,1) * 100).round(2)
+        tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
+        tb = tb.rename(columns={"CODIGO_TECNICO_EXTRAIDO": "TR"})
+
+    tb["Status"] = tb["Taxa%"].apply(lambda t: "🔴" if t>12 else "🟡" if t>9 else "🟢" if t>0 else "⚪")
+    st.dataframe(tb[["Status","Nome","TR","Repetidos","Total","Taxa%"]], use_container_width=True, hide_index=True,
+                 column_config={"Taxa%": st.column_config.ProgressColumn(
+                     "Taxa%", format="%.1f%%", min_value=0,
+                     max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
+
+    if tem_vip and not num_df.empty:
+        _sec("Detalhamento — Repetidos (VIP)")
+        cols_det = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
+                                "rep_dias_anterior","rep_tecnico_filho","rep_cod_fech_anterior",
+                                "rep_agrupador_anterior","Cidade","TEC_ANTERIOR"] if c in num_df.columns]
+        det = num_df[cols_det].copy()
+        det.rename(columns={
+            "FSLOI_GPONAccess":"GPON","Número SA":"SA Filho",
+            "CODIGO_TECNICO_EXTRAIDO":"TR (executor)",
+            "TEC_ANTERIOR":"TR (PAI)"}, inplace=True)
+        st.dataframe(det, use_container_width=True, hide_index=True)
+
+    st.info("Paretos e evoluções serão adaptados na próxima iteração.")
+
 
 def _calcular_repetidos_gpon(ds, mes_str):
-    """Fallback: cálculo interno de repetidos via GPON (PAIs)."""
+    """Fallback: cálculo interno de repetidos via GPON."""
     try:
         per = pd.Period(mes_str, freq="M")
         ano, mes = per.year, per.month
@@ -784,126 +879,6 @@ def _calcular_repetidos_gpon(ds, mes_str):
     return gpons_repetidos, len(den_df), den_df
 
 
-def tela_repetidos(dm, ds, f):
-    _header("🔁", "Repetidos", f)
-
-    # ── Verificar se temos as colunas VIP (TEC_ANTERIOR e FLAG_REPETIDO) ──
-    tem_vip = ("TEC_ANTERIOR" in dm.columns) and ("FLAG_REPETIDO" in dm.columns)
-
-    # ── DENOMINADOR COMUM ───────────────────────────────────────────────────
-    den_df = dm[
-        (dm["Macro Atividade"] == "REP-FTTH") &
-        (dm["Estado"] == "CONCLUÍDO COM SUCESSO")
-    ]
-    den_total = len(den_df)
-
-    if tem_vip:
-        # ── Cálculo via TEC_ANTERIOR (idêntico ao bot) ──
-        num_df = dm[
-            (dm["FLAG_REPETIDO"] == "SIM") &
-            (dm["TEC_ANTERIOR"].notna()) &
-            (dm["TEC_ANTERIOR"].str.strip() != "")
-        ]
-        # Conta quantos filhos cada técnico gera
-        # Mas para o KPI geral, queremos o total de reparos repetidos (filhos)
-        repetidos_total = len(num_df)
-        fonte_label = "🏛️ Fonte: VIP Oficial (TEC_ANTERIOR + FLAG_REPETIDO)"
-    else:
-        # ── Fallback via GPON ──
-        gpons_rep, den_total, _ = _calcular_repetidos_gpon(ds, f["mes"])
-        repetidos_total = len(gpons_rep)
-        num_df = pd.DataFrame()
-        fonte_label = "⚙️ Fonte: Cálculo Interno (GPON)"
-
-    taxa = round(repetidos_total / den_total * 100, 2) if den_total > 0 else 0
-
-    # ── Reparos em garantia (abertos) ──
-    rep_ab = ds[ds["FLAG_REPETIDO_ABERTO"] == "SIM"] if "FLAG_REPETIDO_ABERTO" in ds.columns else pd.DataFrame()
-
-    # ── Alarmados ──
-    if tem_vip:
-        rep_alrm = dm[(dm["FLAG_REPETIDO"] == "SIM") & (dm["ALARMADO"] == "SIM")]
-        rep_alrm_count = len(rep_alrm)
-    else:
-        rep_alrm_count = 0
-
-    cols = st.columns(5)
-    for col, (lb,vl,sb,cl) in zip(cols,[
-        ("Total Reparos", f"{den_total:,}",   "abertos no mes",  "kpi-blue"),
-        ("Repetidos",     f"{repetidos_total:,}",  "reparos filhos",  "kpi-red" if taxa>9 else "kpi-yellow"),
-        ("Taxa %",        f"{taxa}%",          "meta: <= 9%",     "kpi-red" if taxa>9 else "kpi-green"),
-        ("Em Garantia",   f"{len(rep_ab):,}",  "abertos 30d",     "kpi-yellow"),
-        ("Alarmados",     f"{rep_alrm_count}", "GPON alarmado",   "kpi-red" if rep_alrm_count>0 else "kpi-green"),
-    ]):
-        col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
-
-    st.markdown(
-        f'<div style="font-size:11px;color:#64748b;margin:6px 0 14px 2px;">{fonte_label}</div>',
-        unsafe_allow_html=True)
-
-    _sec("Indicador por Tecnico")
-    def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
-
-    if tem_vip:
-        # ── Por técnico: denominador = reparos próprios, numerador = filhos cujo TEC_ANTERIOR é o técnico ──
-        den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
-            Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else ""),
-            Total=("Número SA", "count")).reset_index()
-
-        # Filhos agrupados por TEC_ANTERIOR
-        num_tec = num_df.groupby("TEC_ANTERIOR").size().reset_index(name="Repetidos")
-        num_tec.rename(columns={"TEC_ANTERIOR": "CODIGO_TECNICO_EXTRAIDO"}, inplace=True)
-
-        tb = den_tec.merge(num_tec, on="CODIGO_TECNICO_EXTRAIDO", how="left")
-        tb["Repetidos"] = tb["Repetidos"].fillna(0).astype(int)
-        tb["Taxa%"] = (tb["Repetidos"] / tb["Total"].replace(0, 1) * 100).round(2)
-        tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
-        tb = tb.rename(columns={"CODIGO_TECNICO_EXTRAIDO": "TR"})
-    else:
-        # Fallback GPON
-        den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
-            Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else ""),
-            Total=("Número SA", "count")).reset_index()
-        rep_por_tec = {}
-        for gpon, info in gpons_rep.items():
-            tr = info.get("pai_tr", "")
-            if tr:
-                rep_por_tec[tr] = rep_por_tec.get(tr, 0) + 1
-        num_tec_df = pd.DataFrame(rep_por_tec.items(), columns=["CODIGO_TECNICO_EXTRAIDO", "Repetidos"]) if rep_por_tec else pd.DataFrame(columns=["CODIGO_TECNICO_EXTRAIDO", "Repetidos"])
-        tb = den_tec.merge(num_tec_df, on="CODIGO_TECNICO_EXTRAIDO", how="left")
-        tb["Repetidos"] = tb["Repetidos"].fillna(0).astype(int)
-        tb["Taxa%"] = (tb["Repetidos"] / tb["Total"].replace(0, 1) * 100).round(2)
-        tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
-        tb = tb.rename(columns={"CODIGO_TECNICO_EXTRAIDO": "TR"})
-        tb.columns = ["TR","Total","Nome","Repetidos","Taxa%"]
-
-    tb["Status"] = tb["Taxa%"].apply(lambda t: "🔴" if t>12 else "🟡" if t>9 else "🟢" if t>0 else "⚪")
-    st.dataframe(tb[["Status","Nome","TR","Repetidos","Total","Taxa%"]], use_container_width=True, hide_index=True,
-                 column_config={"Taxa%": st.column_config.ProgressColumn(
-                     "Taxa%", format="%.1f%%", min_value=0,
-                     max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
-
-    # Detalhe VIP
-    if tem_vip and not num_df.empty:
-        _sec("Detalhamento — Repetidos (VIP)")
-        cols_det = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                                "rep_dias_anterior","rep_tecnico_filho","rep_cod_fech_anterior",
-                                "rep_agrupador_anterior","Cidade","TEC_ANTERIOR"] if c in num_df.columns]
-        det = num_df[cols_det].copy()
-        det.rename(columns={
-            "FSLOI_GPONAccess":"GPON","Número SA":"SA Filho",
-            "CODIGO_TECNICO_EXTRAIDO":"TR (executor)",
-            "TEC_ANTERIOR":"TR (PAI)"}, inplace=True)
-        st.dataframe(det, use_container_width=True, hide_index=True)
-
-    # Pareto / evoluções (mantido simplificado, pode ser expandido)
-    st.info("Paretos e evoluções serão adaptados na próxima iteração.")
-
-
-# =============================================================================
-# 9. TELA — INFANCIA (CORRIGIDA COM FLAG_INFANCIA)
-# =============================================================================
-
 def tela_infancia(dm, ds, f):
     _header("👶", "Infancia", f)
 
@@ -918,7 +893,6 @@ def tela_infancia(dm, ds, f):
         inf = inst[inst["FLAG_INFANCIA"] == "SIM"]
         fonte_label = "🏛️ Fonte: VIP Oficial"
     else:
-        # Fallback: cálculo interno
         rep = ds[(ds["Macro Atividade"]=="REP-FTTH") & (ds["Estado"]=="CONCLUÍDO COM SUCESSO")]
         inf_list = []
         for _, irow in inst.iterrows():
@@ -977,7 +951,6 @@ def tela_infancia(dm, ds, f):
                  column_config={"Taxa%": st.column_config.ProgressColumn(
                      "Taxa%", format="%.1f%%", min_value=0, max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
 
-    # Detalhe VIP (se disponível)
     if tem_vip_inf and not inf.empty:
         _sec("Detalhamento — Infância (VIP)")
         cols_det = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
@@ -992,10 +965,6 @@ def tela_infancia(dm, ds, f):
     else:
         st.info("Sem dados VIP de infância para detalhamento.")
 
-
-# =============================================================================
-# 10. TELA — CALENDARIO (mantida)
-# =============================================================================
 
 def tela_calendario(df, ds, f):
     import calendar as _cal
@@ -1127,10 +1096,6 @@ def tela_calendario(df, ds, f):
         showlegend=True)
     st.plotly_chart(fig, use_container_width=True)
 
-
-# =============================================================================
-# TELAS RESTANTES (DIARIO, QUALIDADE) — mantidas como no original, sem alterações
-# =============================================================================
 
 def tela_diario(df, ds, f):
     _header("📅", "Controle do Dia", f)
@@ -1334,70 +1299,25 @@ def tela_diario(df, ds, f):
             st.dataframe(t15, use_container_width=True, hide_index=True)
 
 
-def _cls_prod(v):
-    if v is None or (isinstance(v, float) and pd.isna(v)): return ("S/D", "⬜", "#94a3b8", 0)
-    v = float(v)
-    if v >= 6:   return ("EXCELENTE",        "🏆", "#1e3a5f", 4)
-    if v >= 5:   return ("PARABENS",         "🟢", "#16a34a", 3)
-    if v >= 4:   return ("PARABENS",         "🟢", "#16a34a", 3)
-    if v >= 3:   return ("ATENCAO",          "🟡", "#d97706", 2)
-    if v >= 1:   return ("PRECISA MELHORAR", "🔴", "#dc2626", 1)
-    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 1)
-
-def _cls_efic(v):
-    if v is None or (isinstance(v, float) and pd.isna(v)): return ("S/D", "⬜", "#94a3b8", 0)
-    v = float(v)
-    if v >= 85:  return ("EXCELENTE",        "🏆", "#1e3a5f", 4)
-    if v >= 82:  return ("PARABENS",         "🟢", "#16a34a", 3)
-    if v >= 75:  return ("ATENCAO",          "🟡", "#d97706", 2)
-    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 1)
-
-def _cls_rep(v):
-    if v is None or (isinstance(v, float) and pd.isna(v)): return ("S/D", "⬜", "#94a3b8", 0)
-    v = float(v)
-    if v < 2:    return ("EXCELENTE",        "🏆", "#1e3a5f", 4)
-    if v <= 5:   return ("OTIMO",            "🟢", "#16a34a", 3)
-    if v <= 9:   return ("PARABENS",         "🟢", "#16a34a", 2)
-    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 0)
-
-def _cls_inf(v):
-    if v is None or (isinstance(v, float) and pd.isna(v)): return ("S/D", "⬜", "#94a3b8", 0)
-    v = float(v)
-    if v < 3:    return ("OTIMO",            "🟢", "#16a34a", 3)
-    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 0)
-
-def _nota_total(pc, ec, rc, ic): return pc[3] + ec[3] + rc[3] + ic[3]
-
-def _cor_nota(n):
-    if n >= 13: return "#1e3a5f"
-    if n >= 9:  return "#16a34a"
-    if n >= 5:  return "#d97706"
-    return "#dc2626"
-
-def _badge(label, cor):
-    return (f'<span style="background:{cor};color:white;padding:2px 10px;'
-            f'border-radius:12px;font-size:11px;font-weight:700">{label}</span>')
-
-def _html_ata_qualidade(nome, codigo, supervisor, mes_ref,
-                        prod_val, efic_val, rep_val, inf_val,
-                        prod_cls, efic_cls, rep_cls, inf_cls, nota):
-    # (função mantida como original)
-    pass
-
-
 def tela_qualidade(dm, ds, f):
-    # (implementação original mantida)
+    # Placeholder até integração completa
+    _header("🏆", "Qualidade", f)
     st.info("Tela de Qualidade será integrada em breve.")
 
 
 # =============================================================================
-# MAIN
+# 8. MAIN
 # =============================================================================
 
 def main():
     df = carregar_base()
     if df is None:
-        st.error("Nao foi possivel carregar a base.")
+        st.error("❌ Nenhuma fonte de dados disponível.")
+        st.info(
+            "Para que o painel funcione, configure uma das opções:\n\n"
+            "1. **GitHub API**: Adicione a secret `GITHUB_TOKEN` no Streamlit Cloud com um token de acesso pessoal.\n"
+            "2. **Upload manual**: Use o campo abaixo para enviar o arquivo BASEBOT.csv."
+        )
         return
 
     f    = sidebar(df)
@@ -1406,19 +1326,15 @@ def main():
     ds   = _escopo(df, f)
 
     if f["supervisor"]:
-        ult_att = ultima_atualizacao_base()
-        att_str = f" | 🕐 Base atualizada: {ult_att}" if ult_att else ""
         st.markdown(
             f'<div class="banner-sup">👑 Equipe de <strong>{f["supervisor"]}</strong>'
-            f' — {len(f["tecs_sup"])} tecnico(s) | {f["mes"]}{att_str}</div>',
+            f' — {len(f["tecs_sup"])} tecnico(s) | {f["mes"]}</div>',
             unsafe_allow_html=True)
     else:
-        ult_att = ultima_atualizacao_base()
-        if ult_att:
-            st.markdown(
-                f'<div class="banner-sup" style="background:#f0f4f8">'
-                f'🕐 Base atualizada: <strong>{ult_att}</strong></div>',
-                unsafe_allow_html=True)
+        st.markdown(
+            '<div class="banner-sup" style="background:#f0f4f8">'
+            '🕐 Dados carregados com sucesso.</div>',
+            unsafe_allow_html=True)
 
     if dm.empty and tela not in ("📅 Diario", "📆 Calendario"):
         st.warning("Nenhum dado encontrado para os filtros selecionados.")
