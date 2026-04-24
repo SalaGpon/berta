@@ -630,7 +630,7 @@ def _escopo(df, f):
 
 
 # =============================================================================
-# 7. TELAS (Producao, Repetidos, Infancia, Calendario, Diario)
+# 7. TELAS
 # =============================================================================
 
 def tela_producao(dm, ds, f):
@@ -849,16 +849,16 @@ def tela_repetidos(dm, ds, f):
         else:
             st.info("Dados insuficientes para gráfico diário.")
 
-        # Pareto de causas
+        # Pareto de causas (usando Descrição)
         _sec("Pareto de Causas dos Repetidos")
-        causas = num_df.groupby("Código de encerramento").size().reset_index(name="Qtd")
+        causas = num_df.groupby("Descrição").size().reset_index(name="Qtd")
         causas = causas.sort_values("Qtd", ascending=False)
         causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
         causas["Acum"] = causas["Perc"].cumsum()
         fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
-        fig_causas.add_bar(x=causas["Código de encerramento"], y=causas["Qtd"],
+        fig_causas.add_bar(x=causas["Descrição"], y=causas["Qtd"],
                            name="Ocorrências", marker_color=C["red"])
-        fig_causas.add_scatter(x=causas["Código de encerramento"], y=causas["Acum"],
+        fig_causas.add_scatter(x=causas["Descrição"], y=causas["Acum"],
                                name="% Acumulado", mode="lines+markers",
                                line=dict(color=C["yellow"], width=2), secondary_y=True)
         fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
@@ -1426,24 +1426,21 @@ def _html_ata_qualidade(nome, codigo, supervisor, mes_ref,
                         prod_val, efic_val, rep_val, inf_val,
                         prod_cls, efic_cls, rep_cls, inf_cls, nota):
     nota_max = 16
+    # Título fixo centralizado
+    titulo = "ATA DE DESEMPENHO OPERACIONAL"
+    cor_h = "135deg,#1e3a5f 0%,#2563eb 100%"
+    
+    # Mensagem varia conforme a nota
     if nota >= 13:
-        cor_h = "135deg,#1a6c5c 0%,#2ca08c 100%"
-        titulo = "🏆 ATA DE RECONHECIMENTO — DESEMPENHO EXCELENTE"
         msg = (f"Prezado(a) <strong>{nome}</strong>, seu desempenho no periodo foi "
                f"excepcional. Todos os indicadores estao dentro ou acima das metas. Continue assim!")
     elif nota >= 9:
-        cor_h = "135deg,#1a3a8f 0%,#2563eb 100%"
-        titulo = "✅ ATA DE QUALIDADE — BOM DESEMPENHO"
         msg = (f"Prezado(a) <strong>{nome}</strong>, seu desempenho esta dentro das metas "
                f"esperadas. Identifique os pontos de atencao para atingir a excelencia.")
     elif nota >= 5:
-        cor_h = "135deg,#b45309 0%,#d97706 100%"
-        titulo = "⚠️ ATA DE ATENCAO — PONTOS DE MELHORIA"
         msg = (f"Prezado(a) <strong>{nome}</strong>, ha indicadores que precisam de atencao. "
                f"Vamos alinhar um plano de acao para a melhoria do desempenho.")
     else:
-        cor_h = "135deg,#a8433d 0%,#c0392b 100%"
-        titulo = "🔴 ATA DE ACOMPANHAMENTO — NECESSITA MELHORIA"
         msg = (f"Prezado(a) <strong>{nome}</strong>, seus indicadores estao abaixo das metas "
                f"estabelecidas. E necessario um plano de acao imediato.")
 
@@ -1481,7 +1478,7 @@ def _html_ata_qualidade(nome, codigo, supervisor, mes_ref,
 body{{background:#f5f7fa;padding:20px;color:#333;line-height:1.6}}
 .box{{max-width:860px;margin:0 auto;background:white;border-radius:12px;
       box-shadow:0 5px 25px rgba(0,0,0,.08);overflow:hidden}}
-.hdr{{background:linear-gradient({cor_h});color:white;padding:24px 30px}}
+.hdr{{background:linear-gradient({cor_h});color:white;padding:24px 30px;text-align:center}}
 .hdr h1{{font-size:20px;margin-bottom:4px;font-weight:700}}
 .hdr p{{font-size:12px;opacity:.9}}
 .body{{padding:26px}}
@@ -1723,7 +1720,7 @@ def tela_qualidade(dm, ds, f):
         col.markdown(_kpi(lbl, val, "", cls), unsafe_allow_html=True)
 
     st.write("")
-
+    st.write("")  # espaço extra para evitar sobreposição
     with st.expander("📋 Regras de classificacao", expanded=False):
         st.markdown("""| Indicador | 🏆 Excelente | 🟢 Parabens / Otimo | 🟡 Atencao | 🔴 Precisa Melhorar |
 |---|---|---|---|---|
