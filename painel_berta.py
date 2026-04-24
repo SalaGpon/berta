@@ -3,7 +3,7 @@
 """
 BERTA — Painel Operacional do Supervisor v3.2 (W)
 Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario
-Fonte de dados: GitHub API → upload manual → arquivo local
+Fonte de dados: Repositório (API)
 """
 
 import os
@@ -241,40 +241,39 @@ _LYT = dict(
 )
 
 # =============================================================================
-# 4. CARREGAMENTO DO DATAFRAME (SEM WIDGETS INTERNOS)
+# 4. CARREGAMENTO DO DATAFRAME
 # =============================================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
-def carregar_base_github():
-    """Tenta carregar o BASEBOT.csv via API do GitHub, com detecção automática do separador."""
+def carregar_base_repositorio():
+    """Tenta carregar o BASEBOT.csv via API do repositório, com detecção automática do separador."""
     try:
         token = st.secrets.get("GITHUB_TOKEN", "")
         if not token:
-            st.warning("🔑 Token GITHUB_TOKEN não configurado. Pulando GitHub...")
+            st.warning("🔑 Token de acesso não configurado. Contate o administrador.")
             return None
 
         headers = {"Authorization": f"token {token}"}
         meta_url = "https://api.github.com/repos/SalaGpon/Berta-bot/contents/BASEBOT.csv"
         meta = requests.get(meta_url, headers=headers, timeout=30)
         if meta.status_code != 200:
-            st.warning(f"GitHub Meta: HTTP {meta.status_code}")
+            st.warning(f"Erro ao acessar repositório: HTTP {meta.status_code}")
             return None
 
         sha = meta.json().get("sha")
         blob_url = f"https://api.github.com/repos/SalaGpon/Berta-bot/git/blobs/{sha}"
         blob_resp = requests.get(blob_url, headers=headers, timeout=60)
         if blob_resp.status_code != 200:
-            st.warning(f"GitHub Blob: HTTP {blob_resp.status_code}")
+            st.warning(f"Erro ao baixar arquivo: HTTP {blob_resp.status_code}")
             return None
 
         b64_content = blob_resp.json().get("content")
         if not b64_content:
-            st.warning("GitHub: conteúdo vazio.")
+            st.warning("Arquivo vazio no repositório.")
             return None
 
         texto = base64.b64decode(b64_content).decode("utf-8-sig", errors="replace")
 
-        # Tentar separadores comuns (sem low_memory)
         for sep in ["\t", ";", ","]:
             try:
                 df = pd.read_csv(
@@ -286,12 +285,11 @@ def carregar_base_github():
                     encoding="utf-8-sig"
                 )
                 if df.shape[1] > 5:
-                    st.success(f"✅ Base carregada do GitHub (API) – separador detectado: '{sep}'")
+                    st.success(f"✅ Base carregada do Repositório (API) – separador detectado: '{sep}'")
                     return df
             except Exception:
                 continue
 
-        # Tentar detecção automática (sep=None)
         try:
             df = pd.read_csv(
                 io.StringIO(texto),
@@ -301,21 +299,21 @@ def carregar_base_github():
                 on_bad_lines="warn"
             )
             if df.shape[1] > 5:
-                st.success("✅ Base carregada do GitHub (API) – separador detectado automaticamente")
+                st.success("✅ Base carregada do Repositório (API) – separador automático")
                 return df
         except Exception as e:
-            st.warning(f"Não foi possível ler o arquivo: {e}")
+            st.warning(f"Não foi possível ler o arquivo do repositório: {e}")
 
         return None
 
     except Exception as e:
-        st.warning(f"Erro ao carregar do GitHub: {e}")
+        st.warning(f"Erro ao carregar do repositório: {e}")
         return None
 
 
 @st.cache_data(ttl=300)
 def carregar_base_local():
-    """Tenta carregar via arquivo local (apenas para desenvolvimento)."""
+    """Fallback para arquivo local (apenas desenvolvimento)."""
     if not CAMINHO_BASE_LOCAL:
         return None
     try:
@@ -327,7 +325,6 @@ def carregar_base_local():
                     return df
             except Exception:
                 continue
-        # Tentativa automática
         df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=None, dtype=str, engine="python", on_bad_lines="warn")
         if df.shape[1] > 5:
             st.success("✅ Base carregada do arquivo local – separador automático")
@@ -339,7 +336,7 @@ def carregar_base_local():
 
 def carregar_base():
     """Orquestra o carregamento do BASEBOT.csv."""
-    df = carregar_base_github()
+    df = carregar_base_repositorio()
     if df is None:
         df = carregar_base_local()
     if df is not None:
@@ -351,7 +348,6 @@ def _processar_df(df):
     """Normaliza e cria colunas derivadas (adaptado ao novo layout do BASEBOT.csv)."""
     df.columns = df.columns.str.strip()
 
-    # Mapeamento das colunas obrigatórias (novo formato)
     col_fim = "DH_FIM_EXEC_REAL"
     col_ab  = "AB_BA"
     col_estado = "ESTADO"
@@ -366,25 +362,20 @@ def _processar_df(df):
     col_flag_sucesso = "FLAG_FECHADO_SUCESSO"
     col_flag_sem_sucesso = "FLAG_FECHADO_SEM_SUCESSO"
 
-    # Verifica se as colunas essenciais existem
     for c in [col_fim, col_ab, col_estado, col_macro, col_tecnico, col_territorio, col_sa, col_gpon]:
         if c not in df.columns:
             raise KeyError(f"Coluna '{c}' não encontrada. Colunas disponíveis: {list(df.columns)}")
 
-    # Converte datas
     df["FIM_DT"] = pd.to_datetime(df[col_fim], dayfirst=True, errors="coerce")
     df["AB_DT"]  = pd.to_datetime(df[col_ab],  dayfirst=True, errors="coerce")
 
-    # Estados e macros
     df["Estado"]  = df[col_estado].str.strip().str.upper()
     df["Macro Atividade"] = df[col_macro].str.strip().str.upper()
 
-    # Nome do técnico (extraído de TECNICO_EXECUTOR: "NOME - TRxxxx")
     df["NOME_TEC"] = df[col_tecnico].apply(
         lambda v: str(v).split(" - ")[0].strip().title() if pd.notna(v) and " - " in str(v) else str(v).strip().title()
     )
 
-    # Código do técnico (extrai TR/TT/TC)
     def _extrair_cod(nome):
         if pd.isna(nome) or not nome:
             return ""
@@ -392,7 +383,6 @@ def _processar_df(df):
         return m.group(0).upper() if m else ""
     df["CODIGO_TECNICO_EXTRAIDO"] = df[col_tecnico].apply(_extrair_cod)
 
-    # Campos de datas
     df["DIA_FIM"] = df["FIM_DT"].dt.date
     df["MES_FIM"] = df["FIM_DT"].dt.to_period("M")
     df["SEM_FIM"] = df["FIM_DT"].dt.isocalendar().week.astype("Int64")
@@ -401,11 +391,9 @@ def _processar_df(df):
     df["MES_AB"]  = df["AB_DT"].dt.to_period("M")
     df["SEM_AB"]  = df["AB_DT"].dt.isocalendar().week.astype("Int64")
 
-    # Flags de conclusão (já vêm no arquivo)
     df["FLAG_CONCLUIDO_SUCESSO"] = df.get(col_flag_sucesso, "NAO")
     df["FLAG_CONCLUIDO_SEM_SUCESSO"] = df.get(col_flag_sem_sucesso, "NAO")
 
-    # Flags de reparo / instalação válidos (calculados)
     df["FLAG_REPARO_VALIDO"] = (
         (df["Macro Atividade"] == "REP-FTTH") &
         (df["FLAG_CONCLUIDO_SUCESSO"] == "SIM")
@@ -415,7 +403,6 @@ def _processar_df(df):
         (df["FLAG_CONCLUIDO_SUCESSO"] == "SIM")
     ).map({True: "SIM", False: "NAO"})
 
-    # Outras flags já existentes (mantêm ou criam com default)
     for _f in ("FLAG_REPETIDO_ABERTO", "FLAG_P0_10_DIA", "FLAG_P0_15_DIA",
                "FLAG_REPETIDO", "FLAG_INFANCIA", "FLAG_INF",
                "TEC_ANTERIOR", "IF_DIAS"):
@@ -424,33 +411,27 @@ def _processar_df(df):
         else:
             df[_f] = df[_f].fillna("NAO")
 
-    # FLAG_REPETIDO_30D / FLAG_INFANCIA_30D (usam as VIP, se existirem)
     df["FLAG_REPETIDO_30D"] = df["FLAG_REPETIDO"]
     df["FLAG_INFANCIA_30D"]  = df["FLAG_INFANCIA"]
 
-    # ALARMADO
     if "ALARMADO" not in df.columns:
         df["ALARMADO"] = "NAO"
     else:
         df["ALARMADO"] = df["ALARMADO"].fillna("NAO")
 
-    # CDOE
     if "CDOE" not in df.columns:
         df["CDOE"] = ""
     else:
         df["CDOE"] = df["CDOE"].fillna("")
 
-    # Logradouro (usar LOGRADOURO, que já existe)
     if "Logradouro" not in df.columns:
         df["Logradouro"] = df.get("LOGRADOURO", "")
 
-    # Mapeia colunas antigas para as novas (para compatibilidade com o restante do código)
     df["Território de serviço: Nome"] = df[col_territorio]
     df["Número SA"] = df[col_sa]
     df["FSLOI_GPONAccess"] = df[col_gpon]
-    df["Técnico Atribuído"] = df[col_tecnico]  # usado em algumas partes
+    df["Técnico Atribuído"] = df[col_tecnico]
 
-    # Descrição, observação, código de encerramento
     if "Descrição" not in df.columns:
         df["Descrição"] = df.get(col_descricao, "")
     if "Observação" not in df.columns:
@@ -462,7 +443,6 @@ def _processar_df(df):
 
 
 def extrair_codigo_tecnico(tecnico_str) -> str:
-    """Extrai código (TRxxx, TTxxx, TCxxx) de uma string."""
     try:
         m = re.search(r'(TR\d+|TT\d+|TC\d+)', str(tecnico_str).strip())
         return m.group(1).upper() if m else ""
@@ -472,7 +452,6 @@ def extrair_codigo_tecnico(tecnico_str) -> str:
 
 @st.cache_data(ttl=600)
 def carregar_equipes(df=None):
-    """Obtém as equipes (Supervisor -> [TRs]) do BASEBOT.csv ou da planilha de presença."""
     if df is None:
         df = carregar_base()
     equipes = {}
@@ -574,8 +553,9 @@ def _ev_dual(x, bars, line, bcolor, titulo, h=300, meta=None):
     fig.update_yaxes(showgrid=False, secondary_y=True)
     return fig
 
+
 # =============================================================================
-# 6. SIDEBAR – inclui upload manual e filtros
+# 6. SIDEBAR – sem upload manual
 # =============================================================================
 
 def sidebar(df):
@@ -587,32 +567,6 @@ def sidebar(df):
             '</div>', unsafe_allow_html=True)
         st.divider()
 
-        # Upload manual (fora de qualquer cache)
-        uploaded_file = st.file_uploader(
-            "📂 Enviar BASEBOT.csv manualmente",
-            type=["csv"],
-            key="upload_manual",
-            help="Carregue o arquivo se o GitHub não estiver disponível."
-        )
-        if uploaded_file is not None:
-            try:
-                _df = pd.read_csv(
-                    uploaded_file,
-                    sep=None,
-                    dtype=str,
-                    engine="python",
-                    on_bad_lines="warn"
-                )
-                if len(_df) > 0 and _df.shape[1] > 5:
-                    st.session_state["df_manual"] = _df
-                    st.success("📂 Arquivo carregado manualmente")
-                else:
-                    st.warning("Arquivo enviado está vazio ou não possui colunas suficientes.")
-            except Exception as e:
-                st.error(f"Erro ao ler arquivo: {e}")
-
-        st.divider()
-
         tela = st.radio("Tela",
             ["📅 Diario", "📊 Producao Diaria", "🔁 Repetidos", "👶 Infancia", "📆 Calendario", "🏆 Qualidade"],
             label_visibility="collapsed", key="nav")
@@ -620,11 +574,12 @@ def sidebar(df):
 
         st.markdown("**Filtros**")
         df_atual = df
-        if "df_manual" in st.session_state:
-            df_atual = _processar_df(st.session_state["df_manual"])
 
+        # Mês padrão: mês atual, se existir
         meses = sorted(df_atual["MES_FIM"].dropna().astype(str).unique(), reverse=True)
-        mes   = st.selectbox("📅 Mes", meses, key="f_mes")
+        mes_padrao = datetime.now().strftime("%Y-%m")
+        mes_idx = meses.index(mes_padrao) if mes_padrao in meses else 0
+        mes = st.selectbox("📅 Mes", meses, index=mes_idx, key="f_mes")
 
         eq = carregar_equipes(df_atual)
         sups = sorted(eq.keys())
@@ -646,8 +601,6 @@ def sidebar(df):
         st.divider()
         if st.button("🔄 Recarregar base", use_container_width=True):
             st.cache_data.clear()
-            if "df_manual" in st.session_state:
-                del st.session_state["df_manual"]
             st.rerun()
 
     return {
@@ -672,8 +625,9 @@ def _escopo(df, f):
         return df[df["CODIGO_TECNICO_EXTRAIDO"].isin(f["tecs_sup"])].copy()
     return df
 
+
 # =============================================================================
-# 7. TELAS (todas completas)
+# 7. TELAS
 # =============================================================================
 
 def tela_producao(dm, ds, f):
@@ -860,17 +814,17 @@ def tela_repetidos(dm, ds, f):
         _sec("Detalhamento — Repetidos (VIP)")
         cols_det = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
                                 "rep_dias_anterior","rep_tecnico_filho","rep_cod_fech_anterior",
-                                "rep_agrupador_anterior","Cidade","TEC_ANTERIOR"] if c in num_df.columns]
+                                "rep_agrupador_anterior","Cidade","TEC_ANTERIOR","Logradouro"] if c in num_df.columns]
         det = num_df[cols_det].copy()
         det.rename(columns={
             "FSLOI_GPONAccess":"GPON","Número SA":"SA Filho",
             "CODIGO_TECNICO_EXTRAIDO":"TR (executor)",
-            "TEC_ANTERIOR":"TR (PAI)"}, inplace=True)
+            "TEC_ANTERIOR":"TR (PAI)",
+            "Logradouro":"Endereço"}, inplace=True)
         st.dataframe(det, use_container_width=True, hide_index=True)
 
 
 def _calcular_repetidos_gpon(ds, mes_str):
-    """Fallback: cálculo interno de repetidos via GPON."""
     try:
         per = pd.Period(mes_str, freq="M")
         ano, mes = per.year, per.month
@@ -1158,6 +1112,7 @@ def tela_diario(df, ds, f):
         st.warning("Nenhuma data disponivel.")
         return
 
+    # Data padrão: o dia mais recente disponível (normalmente o dia atual ou último dia útil)
     c_pick, c_info = st.columns([2, 5])
     with c_pick:
         dia_sel = st.date_input("Data de referencia",
@@ -1352,26 +1307,205 @@ def tela_diario(df, ds, f):
             st.dataframe(t15, use_container_width=True, hide_index=True)
 
 
+# =============================================================================
+# 8. TELA QUALIDADE (COMPLETA)
+# =============================================================================
+
+def _cls_prod(v):
+    if pd.isna(v): return ("S/D", "⬜", "#94a3b8", 0)
+    if v >= 6: return ("EXCELENTE", "🏆", "#1e3a5f", 4)
+    if v >= 5: return ("PARABÉNS", "🟢", "#16a34a", 3)
+    if v >= 4: return ("BOM", "🟡", "#d97706", 2)
+    if v >= 1: return ("ATENÇÃO", "🟠", "#f59e0b", 1)
+    return ("CRÍTICO", "🔴", "#dc2626", 0)
+
+def _cls_efic(v):
+    if pd.isna(v): return ("S/D", "⬜", "#94a3b8", 0)
+    if v >= 90: return ("EXCELENTE", "🏆", "#1e3a5f", 4)
+    if v >= 85: return ("PARABÉNS", "🟢", "#16a34a", 3)
+    if v >= 75: return ("ATENÇÃO", "🟡", "#d97706", 2)
+    return ("CRÍTICO", "🔴", "#dc2626", 0)
+
+def _cls_rep(v):
+    if pd.isna(v): return ("S/D", "⬜", "#94a3b8", 0)
+    if v <= 3: return ("EXCELENTE", "🏆", "#1e3a5f", 4)
+    if v <= 6: return ("PARABÉNS", "🟢", "#16a34a", 3)
+    if v <= 9: return ("ATENÇÃO", "🟡", "#d97706", 2)
+    return ("CRÍTICO", "🔴", "#dc2626", 0)
+
+def _cls_inf(v):
+    if pd.isna(v): return ("S/D", "⬜", "#94a3b8", 0)
+    if v <= 3: return ("EXCELENTE", "🏆", "#1e3a5f", 4)
+    if v <= 5: return ("PARABÉNS", "🟢", "#16a34a", 3)
+    if v <= 7: return ("ATENÇÃO", "🟡", "#d97706", 2)
+    return ("CRÍTICO", "🔴", "#dc2626", 0)
+
+def _nota_total(prod_info, efic_info, rep_info, inf_info):
+    return prod_info[3] + efic_info[3] + rep_info[3] + inf_info[3]
+
+def _cor_nota(nota):
+    if nota >= 13: return "#1e3a5f"
+    if nota >= 9:  return "#16a34a"
+    if nota >= 5:  return "#d97706"
+    return "#dc2626"
+
+
 def tela_qualidade(dm, ds, f):
     _header("🏆", "Qualidade", f)
-    st.info("Tela de Qualidade será integrada em breve.")
+
+    tecs = dm["CODIGO_TECNICO_EXTRAIDO"].dropna().unique()
+    if len(tecs) == 0:
+        st.warning("Nenhum técnico encontrado para o período.")
+        return
+
+    dados_tec = []
+    for tr in tecs:
+        atv = dm[dm["CODIGO_TECNICO_EXTRAIDO"] == tr]
+        suc = atv[atv["FLAG_CONCLUIDO_SUCESSO"] == "SIM"]
+        tot = atv[atv["Estado"].isin(["CONCLUÍDO COM SUCESSO", "CONCLUÍDO SEM SUCESSO"])]
+        
+        dias = atv["DIA_FIM"].nunique()
+        media_diaria = round(len(suc) / dias, 1) if dias > 0 else 0.0
+        
+        efi = round(len(suc) / len(tot) * 100, 1) if len(tot) > 0 else 0.0
+        
+        # Repetidos
+        if "FLAG_REPETIDO" in dm.columns and "TEC_ANTERIOR" in dm.columns:
+            filhos = dm[(dm["FLAG_REPETIDO"] == "SIM") & (dm["TEC_ANTERIOR"].str.strip().str.upper() == tr)]
+            num_rep = len(filhos)
+            den_rep = len(dm[(dm["Macro Atividade"] == "REP-FTTH") & 
+                             (dm["FLAG_CONCLUIDO_SUCESSO"] == "SIM") & 
+                             (dm["CODIGO_TECNICO_EXTRAIDO"] == tr)])
+        else:
+            num_rep = 0
+            den_rep = 0
+            df_rep_tec = ds[(ds["Macro Atividade"] == "REP-FTTH") &
+                            (ds["FLAG_CONCLUIDO_SUCESSO"] == "SIM") &
+                            (ds["CODIGO_TECNICO_EXTRAIDO"] == tr)]
+            if not df_rep_tec.empty:
+                for gpon, grupo in df_rep_tec.groupby("FSLOI_GPONAccess"):
+                    grupo = grupo.sort_values("FIM_DT")
+                    for i in range(len(grupo)-1):
+                        if (grupo.iloc[i+1]["FIM_DT"] - grupo.iloc[i]["FIM_DT"]).days <= 30:
+                            num_rep += 1
+                            break
+                den_rep = len(df_rep_tec)
+        taxa_rep = round(num_rep / den_rep * 100, 1) if den_rep > 0 else 0.0
+        
+        # Infância
+        if "FLAG_INFANCIA" in dm.columns:
+            num_inf = len(dm[(dm["CODIGO_TECNICO_EXTRAIDO"] == tr) & (dm["FLAG_INFANCIA"] == "SIM")])
+            den_inf = len(dm[(dm["Macro Atividade"] == "INST-FTTH") &
+                             (dm["FLAG_CONCLUIDO_SUCESSO"] == "SIM") &
+                             (dm["CODIGO_TECNICO_EXTRAIDO"] == tr)])
+        else:
+            inst_tec = ds[(ds["Macro Atividade"] == "INST-FTTH") &
+                          (ds["FLAG_CONCLUIDO_SUCESSO"] == "SIM") &
+                          (ds["CODIGO_TECNICO_EXTRAIDO"] == tr)]
+            num_inf = 0
+            if not inst_tec.empty:
+                rep_ds = ds[(ds["Macro Atividade"] == "REP-FTTH") &
+                            (ds["FLAG_CONCLUIDO_SUCESSO"] == "SIM")]
+                for _, inst_row in inst_tec.iterrows():
+                    gpon = inst_row["FSLOI_GPONAccess"]
+                    fim_inst = inst_row["FIM_DT"]
+                    if pd.isna(gpon) or pd.isna(fim_inst):
+                        continue
+                    limite = fim_inst + pd.Timedelta(days=30)
+                    if any((rep_ds["FSLOI_GPONAccess"] == gpon) & (rep_ds["FIM_DT"] > fim_inst) & (rep_ds["FIM_DT"] <= limite)):
+                        num_inf += 1
+            den_inf = len(inst_tec)
+        taxa_inf = round(num_inf / den_inf * 100, 1) if den_inf > 0 else 0.0
+        
+        nome = atv["NOME_TEC"].iloc[0] if len(atv) > 0 else ""
+        
+        c_prod = _cls_prod(media_diaria)
+        c_efic = _cls_efic(efi)
+        c_rep  = _cls_rep(taxa_rep)
+        c_inf  = _cls_inf(taxa_inf)
+        nota   = _nota_total(c_prod, c_efic, c_rep, c_inf)
+        
+        dados_tec.append({
+            "TR": tr,
+            "Nome": nome,
+            "Prod. Média": media_diaria,
+            "Eficácia (%)": efi,
+            "Repetidos (%)": taxa_rep,
+            "Infância (%)": taxa_inf,
+            "Nota": nota,
+            "Status": f"{c_prod[1]}{c_efic[1]}{c_rep[1]}{c_inf[1]}",
+            "Status_Texto": f"{c_prod[0]} | {c_efic[0]} | {c_rep[0]} | {c_inf[0]}",
+        })
+
+    df_qual = pd.DataFrame(dados_tec).sort_values("Nota", ascending=False)
+    
+    media_equipe = {
+        "Produtividade": round(df_qual["Prod. Média"].mean(), 1) if not df_qual.empty else 0,
+        "Eficácia": round(df_qual["Eficácia (%)"].mean(), 1) if not df_qual.empty else 0,
+        "Repetidos (%)": round(df_qual["Repetidos (%)"].mean(), 1) if not df_qual.empty else 0,
+        "Infância (%)": round(df_qual["Infância (%)"].mean(), 1) if not df_qual.empty else 0,
+    }
+    
+    cols = st.columns(4)
+    for col, (metrica, valor, sub, cls) in zip(cols, [
+        ("Prod. Média", f"{media_equipe['Produtividade']}", "atividades/dia", "kpi-blue"),
+        ("Eficácia", f"{media_equipe['Eficácia']}%", "suc/total", "kpi-green" if media_equipe['Eficácia'] >= 85 else "kpi-yellow"),
+        ("Repetidos", f"{media_equipe['Repetidos (%)']}%", "meta ≤ 9%", "kpi-green" if media_equipe['Repetidos (%)'] <= 9 else "kpi-red"),
+        ("Infância", f"{media_equipe['Infância (%)']}%", "meta ≤ 5%", "kpi-green" if media_equipe['Infância (%)'] <= 5 else "kpi-red"),
+    ]):
+        col.markdown(_kpi(metrica, valor, sub, cls), unsafe_allow_html=True)
+    st.write("")
+    
+    _sec("Ranking de Qualidade por Técnico")
+    st.markdown("""
+    <div style="font-size:11px;color:#64748b;margin-bottom:10px">
+        <b>Critérios:</b> 🏆 Excelente (4pts) • 🟢 Bom (3pts) • 🟡 Atenção (2pts) • 🟠 Ruim (1pt) • 🔴 Crítico (0pts)<br>
+        <b>Nota final:</b> soma dos pontos nos quatro pilares (máx. 16).<br>
+        <b>Legenda cores:</b> <span style="color:#1e3a5f;font-weight:700">≥13</span> • <span style="color:#16a34a;font-weight:700">9-12</span> • <span style="color:#d97706;font-weight:700">5-8</span> • <span style="color:#dc2626;font-weight:700">&lt;5</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.dataframe(
+        df_qual[["TR", "Nome", "Prod. Média", "Eficácia (%)", "Repetidos (%)", "Infância (%)", "Nota", "Status", "Status_Texto"]],
+        column_config={
+            "TR": st.column_config.TextColumn("TR", width="small"),
+            "Nome": st.column_config.TextColumn("Nome", width="medium"),
+            "Prod. Média": st.column_config.NumberColumn("Média/Dia", format="%.1f"),
+            "Eficácia (%)": st.column_config.ProgressColumn("Eficácia", format="%.1f%%", min_value=0, max_value=100),
+            "Repetidos (%)": st.column_config.ProgressColumn("Repetidos", format="%.1f%%", min_value=0, max_value=100),
+            "Infância (%)": st.column_config.ProgressColumn("Infância", format="%.1f%%", min_value=0, max_value=100),
+            "Nota": st.column_config.NumberColumn("Nota (0-16)", format="%d"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "Status_Texto": st.column_config.TextColumn("Detalhe", width="medium"),
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    _sec("Distribuição da Nota de Qualidade")
+    df_graf = df_qual.sort_values("Nota")
+    cores = [_cor_nota(n) for n in df_graf["Nota"]]
+    fig = go.Figure(go.Bar(
+        x=df_graf["Nota"],
+        y=df_graf["Nome"],
+        orientation="h",
+        marker_color=cores,
+        text=df_graf["Nota"].astype(str),
+        textposition="inside",
+        textfont=dict(color="white", size=12)
+    ))
+    fig.update_layout(**_lyt("", 400))
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # =============================================================================
-# 8. MAIN
+# 9. MAIN
 # =============================================================================
 
 def main():
-    # Verifica se há upload manual na sessão
-    if "df_manual" in st.session_state:
-        df = _processar_df(st.session_state["df_manual"])
-        st.success("Usando arquivo carregado manualmente.")
-    else:
-        df = carregar_base()
-
+    df = carregar_base()
     if df is None:
-        st.error("❌ Nenhuma fonte de dados disponível.")
-        st.info("Configure a secret `GITHUB_TOKEN` ou faça upload manual do arquivo BASEBOT.csv.")
+        st.error("❌ Não foi possível carregar a base de dados. Verifique o token de acesso.")
         return
 
     f    = sidebar(df)
