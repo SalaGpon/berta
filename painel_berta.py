@@ -3,7 +3,7 @@
 """
 BERTA — Painel Operacional do Supervisor v3.2 (W)
 Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario
-Fonte de dados: GitHub API (detecção automática) → upload manual → arquivo local
+Fonte de dados: GitHub API → upload manual → arquivo local
 """
 
 import os
@@ -30,7 +30,7 @@ st.set_page_config(
 )
 
 # =============================================================================
-# 2. CSS GLOBAL (mantido exatamente como antes)
+# 2. CSS GLOBAL
 # =============================================================================
 
 st.markdown("""
@@ -274,14 +274,13 @@ def carregar_base_github():
 
         texto = base64.b64decode(b64_content).decode("utf-8-sig", errors="replace")
 
-        # Tenta ler com os separadores mais comuns, usando engine Python e ignorando linhas problemáticas
+        # Tentar separadores comuns (sem low_memory)
         for sep in ["\t", ";", ","]:
             try:
                 df = pd.read_csv(
                     io.StringIO(texto),
                     sep=sep,
                     dtype=str,
-                    low_memory=False,
                     engine="python",
                     on_bad_lines="warn",
                     encoding="utf-8-sig"
@@ -292,13 +291,12 @@ def carregar_base_github():
             except Exception:
                 continue
 
-        # Se nenhum separador funcionar, tenta detecção automática (engine Python, sep=None)
+        # Tentar detecção automática (sep=None)
         try:
             df = pd.read_csv(
                 io.StringIO(texto),
                 sep=None,
                 dtype=str,
-                low_memory=False,
                 engine="python",
                 on_bad_lines="warn"
             )
@@ -321,16 +319,16 @@ def carregar_base_local():
     if not CAMINHO_BASE_LOCAL:
         return None
     try:
-        # Detecção automática para arquivo local também
         for sep in ["\t", ";", ","]:
             try:
-                df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=sep, dtype=str, low_memory=False, engine="python", on_bad_lines="warn")
+                df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=sep, dtype=str, engine="python", on_bad_lines="warn")
                 if df.shape[1] > 5:
                     st.success(f"✅ Base carregada do arquivo local – separador '{sep}'")
                     return df
             except Exception:
                 continue
-        df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=None, dtype=str, low_memory=False, engine="python", on_bad_lines="warn")
+        # Tentativa automática
+        df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=None, dtype=str, engine="python", on_bad_lines="warn")
         if df.shape[1] > 5:
             st.success("✅ Base carregada do arquivo local – separador automático")
             return df
@@ -525,7 +523,7 @@ def carregar_equipes(df=None):
 
 
 # =============================================================================
-# 5. HELPERS (mantidos os mesmos)
+# 5. HELPERS
 # =============================================================================
 
 def _kpi(label, valor, sub="", cls="kpi-blue"):
@@ -598,12 +596,10 @@ def sidebar(df):
         )
         if uploaded_file is not None:
             try:
-                # Tenta detectar o separador automaticamente
                 _df = pd.read_csv(
                     uploaded_file,
                     sep=None,
                     dtype=str,
-                    low_memory=False,
                     engine="python",
                     on_bad_lines="warn"
                 )
@@ -677,7 +673,7 @@ def _escopo(df, f):
     return df
 
 # =============================================================================
-# 7. TELAS (todas completas, adaptadas às novas colunas)
+# 7. TELAS (todas completas)
 # =============================================================================
 
 def tela_producao(dm, ds, f):
