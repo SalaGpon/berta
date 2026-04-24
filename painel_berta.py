@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BERTA — Painel Operacional do Supervisor v3.4 (W)
+BERTA — Painel Operacional do Supervisor v3.4
 Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario
 Fonte de dados: Repositório (API)
 """
@@ -1371,10 +1371,8 @@ def tela_diario(df, ds, f):
 
 
 # =============================================================================
-# 8. TELA QUALIDADE (COMPLETA DO painel_bertaV.py, adaptada)
+# 8. TELA QUALIDADE (COMPLETA + ATA)
 # =============================================================================
-
-# ── Regras de classificacao por indicador ──────────────────────────────────
 
 def _cls_prod(v):
     if v is None or (isinstance(v, float) and pd.isna(v)):
@@ -1424,8 +1422,6 @@ def _cor_nota(n):
 def _badge(label, cor):
     return (f'<span style="background:{cor};color:white;padding:2px 10px;'
             f'border-radius:12px;font-size:11px;font-weight:700">{label}</span>')
-
-# ── HTML da ata de qualidade ───────────────────────────────────────────────
 
 def _html_ata_qualidade(nome, codigo, supervisor, mes_ref,
                         prod_val, efic_val, rep_val, inf_val,
@@ -1654,7 +1650,6 @@ def tela_qualidade(dm, ds, f):
 
     mes_ref = f.get("mes", "")
 
-    # ── Construir tabela por técnico ─────────────────────────────────────────
     tecs = sorted(dm["CODIGO_TECNICO_EXTRAIDO"].dropna().unique())
     if not tecs:
         st.warning("Nenhum tecnico encontrado para os filtros selecionados.")
@@ -1668,29 +1663,24 @@ def tela_qualidade(dm, ds, f):
 
         nome = _n(df_t["Técnico Atribuído"].dropna().iloc[0]) if not df_t["Técnico Atribuído"].dropna().empty else cod
 
-        # ── Produtividade: media de atividades/dia concluidas com sucesso ──
         suc = df_t[df_t["FLAG_CONCLUIDO_SUCESSO"] == "SIM"]
         dias_unicos = suc["DIA_FIM"].dropna().nunique()
         prod_media  = round(len(suc) / dias_unicos, 1) if dias_unicos > 0 else None
 
-        # ── Eficácia: sucesso / (sucesso + sem_sucesso) ──
         n_suc  = (df_t["FLAG_CONCLUIDO_SUCESSO"]     == "SIM").sum()
         n_ss   = (df_t["FLAG_CONCLUIDO_SEM_SUCESSO"] == "SIM").sum()
         efic   = round(n_suc / (n_suc + n_ss) * 100, 1) if (n_suc + n_ss) > 0 else None
 
-        # ── Repetida: FLAG_REPETIDO (PAI) ──
         rep_den = (df_t["Macro Atividade"] == "REP-FTTH").sum()
         rep_num = ((df_t["Macro Atividade"] == "REP-FTTH") &
                    (df_t["FLAG_REPETIDO"] == "SIM")).sum()
         rep_pct = round(rep_num / rep_den * 100, 1) if rep_den > 0 else None
 
-        # ── Infância: FLAG_INFANCIA (PAI) ──
         inst_den = (df_t["FLAG_INSTALACAO_VALIDA"] == "SIM").sum()
         inst_num = ((df_t["FLAG_INSTALACAO_VALIDA"] == "SIM") &
                     (df_t["FLAG_INFANCIA"] == "SIM")).sum()
         inf_pct  = round(inst_num / inst_den * 100, 1) if inst_den > 0 else None
 
-        # ── Classificações ──
         pc = _cls_prod(prod_media)
         ec = _cls_efic(efic)
         rc = _cls_rep(rep_pct)
@@ -1719,7 +1709,6 @@ def tela_qualidade(dm, ds, f):
 
     df_q = pd.DataFrame(rows).sort_values("nota", ascending=False).reset_index(drop=True)
 
-    # ── KPIs de resumo ───────────────────────────────────────────────────────
     n_exc = (df_q["nota"] >= 13).sum()
     n_bom = ((df_q["nota"] >= 9) & (df_q["nota"] < 13)).sum()
     n_atc = ((df_q["nota"] >= 5) & (df_q["nota"] < 9)).sum()
@@ -1736,7 +1725,6 @@ def tela_qualidade(dm, ds, f):
 
     st.write("")
 
-    # ── Legenda de regras ────────────────────────────────────────────────────
     with st.expander("📋 Regras de classificacao", expanded=False):
         st.markdown("""| Indicador | 🏆 Excelente | 🟢 Parabens / Otimo | 🟡 Atencao | 🔴 Precisa Melhorar |
 |---|---|---|---|---|
@@ -1748,7 +1736,6 @@ def tela_qualidade(dm, ds, f):
 **Pontuacao:** cada indicador vale 0–4 pontos. Total 0–16.
 ≥13 Excelente | 9–12 Bom | 5–8 Atencao | <5 Precisa Melhorar""")
 
-    # ── Tabela principal ─────────────────────────────────────────────────────
     _sec("Ranking de Qualidade por Tecnico")
 
     disp = []
@@ -1810,7 +1797,6 @@ def tela_qualidade(dm, ds, f):
         }
     )
 
-    # ── Gráfico de distribuição por indicador ────────────────────────────────
     st.write("")
     _sec("Distribuicao de Classificacoes por Indicador")
 
@@ -1834,15 +1820,14 @@ def tela_qualidade(dm, ds, f):
             textposition="auto", textfont_size=11,
         ))
 
-    fig_dist.update_layout(
-        **_lyt("Distribuicao por Indicador e Classificacao", 340),
-        barmode="stack",
-        yaxis=dict(title="Qtd. Tecnicos", gridcolor=C["grid"]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-    )
+    # Constrói o layout base a partir de _lyt e adiciona os extras
+    layout_dist = _lyt("Distribuicao por Indicador e Classificacao", 340)
+    layout_dist["barmode"] = "stack"
+    layout_dist["yaxis"] = dict(title="Qtd. Tecnicos", gridcolor=C["grid"])
+    layout_dist["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    fig_dist.update_layout(layout_dist)
     st.plotly_chart(fig_dist, use_container_width=True)
 
-    # ── Geração de Atas ──────────────────────────────────────────────────────
     _sec("Gerar Atas de Qualidade — Assinatura Digital")
     st.caption(
         "Clique em 📄 ATA para baixar o formulario HTML. "
