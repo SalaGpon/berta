@@ -656,7 +656,7 @@ def _escopo(df, f):
 
 
 # =============================================================================
-# 7. TELAS
+# 7. TELAS (Producao, Repetidos, Infancia, Calendario, Diario, Qualidade)
 # =============================================================================
 
 def tela_producao(dm, ds, f):
@@ -860,7 +860,6 @@ def tela_repetidos(dm, ds, f):
 
         st.divider()
 
-        # Repetidos por dia + linha de tendência
         _sec("Repetidos por Dia do Mês")
         if "DIA_FIM" in num_df.columns:
             diario = num_df.groupby("DIA_FIM").size().reset_index(name="Repetidos")
@@ -876,7 +875,6 @@ def tela_repetidos(dm, ds, f):
         else:
             st.info("Dados insuficientes para gráfico diário.")
 
-        # Pareto de causas (Causa Macro)
         _sec("Pareto de Causas dos Repetidos")
         mapa_causas = carregar_causas_macro()
         if mapa_causas:
@@ -899,7 +897,6 @@ def tela_repetidos(dm, ds, f):
         fig_causas.update_yaxes(showgrid=False, secondary_y=True)
         st.plotly_chart(fig_causas, use_container_width=True)
 
-        # Pareto por técnico
         _sec("Pareto de Técnicos — Repetidos")
         pareto_tec = tb[["Nome","TR","Repetidos"]].sort_values("Repetidos", ascending=False)
         pareto_tec["Perc"] = (pareto_tec["Repetidos"] / pareto_tec["Repetidos"].sum() * 100).round(1)
@@ -1065,7 +1062,6 @@ def tela_infancia(dm, ds, f):
 
         st.divider()
 
-        # Infância por dia do mês + linha de tendência
         _sec("Infância por Dia do Mês")
         if "DIA_FIM" in inf.columns:
             diario = inf.groupby("DIA_FIM").size().reset_index(name="Infancia")
@@ -1081,7 +1077,6 @@ def tela_infancia(dm, ds, f):
         else:
             st.info("Dados insuficientes para gráfico diário.")
 
-        # Pareto de causas (Causa Macro)
         _sec("Pareto de Causas da Infância")
         sas = inf["SA_REPARO_INFANCIA"].dropna().unique() if "SA_REPARO_INFANCIA" in inf.columns else []
         rows = ds[ds["Número SA"].isin(sas)] if len(sas) else pd.DataFrame()
@@ -1108,7 +1103,6 @@ def tela_infancia(dm, ds, f):
         else:
             st.info("Sem dados de causa dos reparos de infância.")
 
-        # Pareto por técnico (infância)
         _sec("Pareto de Técnicos — Infância")
         pareto_tec = tb[["Nome","TR","Infancia"]].sort_values("Infancia", ascending=False)
         pareto_tec["Perc"] = (pareto_tec["Infancia"] / pareto_tec["Infancia"].sum() * 100).round(1)
@@ -1716,7 +1710,6 @@ document.getElementById('btnPDF').onclick=async()=>{{
     doc.addImage(padS.toDataURL('image/png'),'PNG',14,y,80,28); y+=32;
   }}
   const pdfBase64 = doc.output('datauristring').split(',')[1];
-  // Envia para o Google Drive
   const urlAtas = '{URL_ATAS_DRIVE}';
   const payload = {{
     supervisor: '{sup_safe}',
@@ -1726,7 +1719,6 @@ document.getElementById('btnPDF').onclick=async()=>{{
   fetch(urlAtas, {{ method: 'POST', mode: 'no-cors', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(payload) }})
     .then(() => alert('ATA salva no Google Drive com sucesso!'))
     .catch(err => alert('Erro ao salvar no Drive: ' + err));
-  // Download local
   doc.save('ata_qualidade_{cod_safe}_{ts_now}.pdf');
 }};
 window.addEventListener('resize',()=>{{
@@ -2001,7 +1993,7 @@ def tela_qualidade(dm, ds, f):
 
 
 # =============================================================================
-# 9. TELA JUSTIFICATIVAS (DIÁRIA)
+# 9. TELA JUSTIFICATIVAS (DIÁRIA – COM ENDEREÇO E DESCRIÇÃO)
 # =============================================================================
 
 def tela_justificativas(df, f):
@@ -2021,11 +2013,35 @@ def tela_justificativas(df, f):
 
     dm = ds[ds["FIM_DT"].dt.date == dia_sel].copy()
 
+    # Função auxiliar para montar endereço
+    def _endereco(row):
+        parts = []
+        if "Logradouro" in row and pd.notna(row["Logradouro"]) and str(row["Logradouro"]).strip():
+            parts.append(str(row["Logradouro"]).strip())
+        if "Número" in row and pd.notna(row["Número"]) and str(row["Número"]).strip():
+            parts.append(str(row["Número"]).strip())
+        if "Bairro" in row and pd.notna(row["Bairro"]) and str(row["Bairro"]).strip():
+            parts.append(str(row["Bairro"]).strip())
+        cidade = ""
+        if "Cidade" in row and pd.notna(row["Cidade"]) and str(row["Cidade"]).strip():
+            cidade = str(row["Cidade"]).strip()
+        elif "Território de serviço: Nome" in row:
+            terr = str(row["Território de serviço: Nome"]).strip()
+            if "." in terr:
+                partes_terr = terr.split(".")
+                if len(partes_terr) >= 2:
+                    cidade = partes_terr[1].strip()
+            else:
+                cidade = terr
+        if cidade:
+            parts.append(cidade)
+        return ", ".join(parts) if parts else "Endereço não disponível"
+
     tab1, tab2, tab3, tab4 = st.tabs(["⚠️ PZERO", "🔁 REPETIDOS", "👶 INFÂNCIA", "🚨 ALARMES 24H"])
 
     supervisor_atual = f.get("supervisor", "N/I")
 
-    # PZERO
+    # ---------- PZERO ----------
     with tab1:
         st.markdown("### PZero do dia")
         pzero = dm[((dm["FLAG_P0_10_DIA"] == "SIM") | (dm["FLAG_P0_15_DIA"] == "SIM"))]
@@ -2038,6 +2054,10 @@ def tela_justificativas(df, f):
                     c1.write(f"**SA:** {row['Número SA']}")
                     c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
                     c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    st.caption(f"🏠 Endereço: {_endereco(row)}")
+                    desc = row.get("Descrição", "")
+                    if pd.notna(desc) and str(desc).strip():
+                        st.caption(f"📋 Descrição: {str(desc).strip()}")
                     just = st.text_area("Justificativa", key=f"just_pzero_{idx}")
                     if st.form_submit_button("Enviar"):
                         if not just:
@@ -2061,7 +2081,7 @@ def tela_justificativas(df, f):
                                 except Exception as e:
                                     st.error(f"❌ Falha na comunicação: {e}")
 
-    # REPETIDOS
+    # ---------- REPETIDOS ----------
     with tab2:
         st.markdown("### Repetidos do dia")
         repetidos = dm[(dm["Macro Atividade"] == "REP-FTTH") &
@@ -2076,6 +2096,10 @@ def tela_justificativas(df, f):
                     c1.write(f"**SA:** {row['Número SA']}")
                     c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
                     c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    st.caption(f"🏠 Endereço: {_endereco(row)}")
+                    desc = row.get("Descrição", "")
+                    if pd.notna(desc) and str(desc).strip():
+                        st.caption(f"📋 Descrição: {str(desc).strip()}")
                     just = st.text_area("Justificativa", key=f"just_rep_{idx}")
                     if st.form_submit_button("Enviar"):
                         if not just:
@@ -2099,7 +2123,7 @@ def tela_justificativas(df, f):
                                 except Exception as e:
                                     st.error(f"❌ Falha na comunicação: {e}")
 
-    # INFÂNCIA
+    # ---------- INFÂNCIA ----------
     with tab3:
         st.markdown("### Infâncias do dia")
         infancias = dm[(dm["Macro Atividade"] == "INST-FTTH") &
@@ -2113,6 +2137,10 @@ def tela_justificativas(df, f):
                     c1.write(f"**SA:** {row['Número SA']}")
                     c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
                     c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    st.caption(f"🏠 Endereço: {_endereco(row)}")
+                    desc = row.get("Descrição", "")
+                    if pd.notna(desc) and str(desc).strip():
+                        st.caption(f"📋 Descrição: {str(desc).strip()}")
                     just = st.text_area("Justificativa", key=f"just_inf_{idx}")
                     if st.form_submit_button("Enviar"):
                         if not just:
@@ -2136,7 +2164,7 @@ def tela_justificativas(df, f):
                                 except Exception as e:
                                     st.error(f"❌ Falha na comunicação: {e}")
 
-    # ALARMES 24H
+    # ---------- ALARMES 24H ----------
     with tab4:
         st.markdown("### Alarmes 24h do dia")
         alarmes = dm[(dm["ALARMADO"] == "SIM")]
@@ -2149,6 +2177,10 @@ def tela_justificativas(df, f):
                     c1.write(f"**SA:** {row['Número SA']}")
                     c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
                     c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    st.caption(f"🏠 Endereço: {_endereco(row)}")
+                    desc = row.get("Descrição", "")
+                    if pd.notna(desc) and str(desc).strip():
+                        st.caption(f"📋 Descrição: {str(desc).strip()}")
                     just = st.text_area("Justificativa", key=f"just_alrm_{idx}")
                     if st.form_submit_button("Enviar"):
                         if not just:
