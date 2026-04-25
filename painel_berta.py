@@ -241,7 +241,6 @@ _LYT = dict(
     legend=dict(bgcolor="rgba(255,255,255,.9)", bordercolor=C["grid"], borderwidth=1, font_color=C["txt"]),
 )
 
-# URLs dos Web Apps do Google Apps Script
 URL_JUSTIFICATIVA = "https://script.google.com/macros/s/AKfycbzBQjCcxSMrKBlUH3H6PY4I1AvF_XKTvJcHKXsHFT6HI7J-MONPeLXTEvZZOo5da4-y/exec"
 URL_ATAS_DRIVE    = "https://script.google.com/macros/s/AKfycbyEw2E759E79Tpy3wbgZt8tip6F82aYtQiZ33-CoIpcExiUX5dUXynoBqYzJaa-fPk7DA/exec"
 
@@ -657,7 +656,7 @@ def _escopo(df, f):
 
 
 # =============================================================================
-# 7. TELAS (Producao, Repetidos, Infancia, Calendario, Diario)
+# 7. TELAS
 # =============================================================================
 
 def tela_producao(dm, ds, f):
@@ -2002,69 +2001,177 @@ def tela_qualidade(dm, ds, f):
 
 
 # =============================================================================
-# 9. TELA JUSTIFICATIVAS
+# 9. TELA JUSTIFICATIVAS (DIÁRIA)
 # =============================================================================
 
 def tela_justificativas(df, f):
-    _header("📝", "Registro de Justificativas", f)
+    _header("📝", "Justificativas Diárias", f)
+    ds = _escopo(df, f)
 
-    supervisor_atual = f.get("supervisor", "") or st.text_input("Supervisor (se não filtrado)", key="sup_just")
+    datas_disp = sorted(ds["FIM_DT"].dropna().dt.date.unique(), reverse=True)
+    if not datas_disp:
+        st.warning("Nenhuma data disponível.")
+        return
+
+    hoje = datetime.today().date()
+    valor_padrao = hoje if hoje in datas_disp else datas_disp[0]
+    dia_sel = st.date_input("Data de referência", value=valor_padrao,
+                            min_value=datas_disp[-1], max_value=datas_disp[0],
+                            key="dia_just")
+
+    dm = ds[ds["FIM_DT"].dt.date == dia_sel].copy()
 
     tab1, tab2, tab3, tab4 = st.tabs(["⚠️ PZERO", "🔁 REPETIDOS", "👶 INFÂNCIA", "🚨 ALARMES 24H"])
 
-    tipos = {
-        "PZERO":       {"tipo": "PZERO",       "emoji": "⚠️", "desc": "Registre justificativas de PZero."},
-        "REPETIDO":    {"tipo": "REPETIDO",    "emoji": "🔁", "desc": "Registre justificativas de reparos repetidos."},
-        "INFANCIA":    {"tipo": "INFANCIA",    "emoji": "👶", "desc": "Registre justificativas de reparos em infância."},
-        "ALARME_24H":  {"tipo": "ALARME_24H",  "emoji": "🚨", "desc": "Registre alarmes de GPON abertos há mais de 24 horas."}
-    }
+    supervisor_atual = f.get("supervisor", "N/I")
 
-    for aba, (chave, config) in zip([tab1, tab2, tab3, tab4], tipos.items()):
-        with aba:
-            st.markdown(f"{config['emoji']} **{config['desc']}**")
-            col1, col2 = st.columns(2)
-            with col1:
-                tec_disponiveis = f.get("tecnicos", [])
-                if tec_disponiveis:
-                    tecnico = st.selectbox("Técnico (TR)", tec_disponiveis, key=f"tec_{chave}")
-                else:
-                    tecnico = st.text_input("Código do Técnico (TR)", key=f"tec_{chave}")
-                referencia = st.text_input("Referência (SA/GPON)", key=f"ref_{chave}")
-            with col2:
-                if supervisor_atual:
-                    st.markdown(f"**Supervisor:** {supervisor_atual}")
-                    supervisor = supervisor_atual
-                else:
-                    supervisor = st.text_input("Supervisor", key=f"sup_{chave}")
-                data_ocorrencia = st.date_input("Data da Ocorrência", datetime.today(), key=f"data_{chave}")
+    # PZERO
+    with tab1:
+        st.markdown("### PZero do dia")
+        pzero = dm[((dm["FLAG_P0_10_DIA"] == "SIM") | (dm["FLAG_P0_15_DIA"] == "SIM"))]
+        if pzero.empty:
+            st.success("Nenhum PZero registrado.")
+        else:
+            for idx, row in pzero.iterrows():
+                with st.form(key=f"pzero_form_{idx}"):
+                    c1, c2, c3 = st.columns([2,2,2])
+                    c1.write(f"**SA:** {row['Número SA']}")
+                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
+                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    just = st.text_area("Justificativa", key=f"just_pzero_{idx}")
+                    if st.form_submit_button("Enviar"):
+                        if not just:
+                            st.error("Justificativa é obrigatória.")
+                        else:
+                            payload = {
+                                "supervisor": supervisor_atual,
+                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
+                                "tipo": "PZERO",
+                                "referencia": str(row["Número SA"]),
+                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
+                            }
+                            with st.spinner("Enviando..."):
+                                try:
+                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
+                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
+                                        st.success("✅ PZERO justificado!")
+                                        st.balloons()
+                                    else:
+                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
+                                except Exception as e:
+                                    st.error(f"❌ Falha na comunicação: {e}")
 
-            justificativa = st.text_area("Justificativa *", height=100, key=f"just_{chave}")
+    # REPETIDOS
+    with tab2:
+        st.markdown("### Repetidos do dia")
+        repetidos = dm[(dm["Macro Atividade"] == "REP-FTTH") &
+                        (dm["FLAG_REPETIDO"] == "SIM") &
+                        (dm["TEC_ANTERIOR"].notna())]
+        if repetidos.empty:
+            st.success("Nenhum repetido registrado.")
+        else:
+            for idx, row in repetidos.iterrows():
+                with st.form(key=f"rep_form_{idx}"):
+                    c1, c2, c3 = st.columns([2,2,2])
+                    c1.write(f"**SA:** {row['Número SA']}")
+                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
+                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    just = st.text_area("Justificativa", key=f"just_rep_{idx}")
+                    if st.form_submit_button("Enviar"):
+                        if not just:
+                            st.error("Justificativa é obrigatória.")
+                        else:
+                            payload = {
+                                "supervisor": supervisor_atual,
+                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
+                                "tipo": "REPETIDO",
+                                "referencia": str(row["Número SA"]),
+                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
+                            }
+                            with st.spinner("Enviando..."):
+                                try:
+                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
+                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
+                                        st.success("✅ Repetido justificado!")
+                                        st.balloons()
+                                    else:
+                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
+                                except Exception as e:
+                                    st.error(f"❌ Falha na comunicação: {e}")
 
-            if st.button(f"Enviar {config['tipo']}", key=f"btn_{chave}"):
-                if not tecnico or not justificativa:
-                    st.error("Técnico e justificativa são obrigatórios.")
-                else:
-                    payload = {
-                        "supervisor": supervisor or "N/I",
-                        "tecnico": tecnico.strip().upper(),
-                        "tipo": config["tipo"],
-                        "referencia": referencia.strip(),
-                        "justificativa": f"[{data_ocorrencia.strftime('%d/%m/%Y')}] {justificativa}"
-                    }
-                    with st.spinner("Enviando justificativa..."):
-                        try:
-                            resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
-                            if resp.status_code == 200 and resp.json().get("status") == "ok":
-                                st.success(f"✅ {config['emoji']} Justificativa de {config['tipo']} registrada!")
-                                st.balloons()
-                            else:
-                                st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
-                        except Exception as e:
-                            st.error(f"❌ Falha na comunicação: {e}")
+    # INFÂNCIA
+    with tab3:
+        st.markdown("### Infâncias do dia")
+        infancias = dm[(dm["Macro Atividade"] == "INST-FTTH") &
+                        (dm["FLAG_INFANCIA"] == "SIM")]
+        if infancias.empty:
+            st.success("Nenhuma infância registrada.")
+        else:
+            for idx, row in infancias.iterrows():
+                with st.form(key=f"inf_form_{idx}"):
+                    c1, c2, c3 = st.columns([2,2,2])
+                    c1.write(f"**SA:** {row['Número SA']}")
+                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
+                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    just = st.text_area("Justificativa", key=f"just_inf_{idx}")
+                    if st.form_submit_button("Enviar"):
+                        if not just:
+                            st.error("Justificativa é obrigatória.")
+                        else:
+                            payload = {
+                                "supervisor": supervisor_atual,
+                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
+                                "tipo": "INFANCIA",
+                                "referencia": str(row["Número SA"]),
+                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
+                            }
+                            with st.spinner("Enviando..."):
+                                try:
+                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
+                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
+                                        st.success("✅ Infância justificada!")
+                                        st.balloons()
+                                    else:
+                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
+                                except Exception as e:
+                                    st.error(f"❌ Falha na comunicação: {e}")
 
-            st.divider()
-            with st.expander(f"📋 Histórico de {config['tipo']}"):
-                st.info("Visualização do histórico será implementada em breve. Acesse a planilha diretamente.")
+    # ALARMES 24H
+    with tab4:
+        st.markdown("### Alarmes 24h do dia")
+        alarmes = dm[(dm["ALARMADO"] == "SIM")]
+        if alarmes.empty:
+            st.success("Nenhum alarme registrado.")
+        else:
+            for idx, row in alarmes.iterrows():
+                with st.form(key=f"alrm_form_{idx}"):
+                    c1, c2, c3 = st.columns([2,2,2])
+                    c1.write(f"**SA:** {row['Número SA']}")
+                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
+                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    just = st.text_area("Justificativa", key=f"just_alrm_{idx}")
+                    if st.form_submit_button("Enviar"):
+                        if not just:
+                            st.error("Justificativa é obrigatória.")
+                        else:
+                            payload = {
+                                "supervisor": supervisor_atual,
+                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
+                                "tipo": "ALARME_24H",
+                                "referencia": str(row["Número SA"]),
+                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
+                            }
+                            with st.spinner("Enviando..."):
+                                try:
+                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
+                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
+                                        st.success("✅ Alarme justificado!")
+                                        st.balloons()
+                                    else:
+                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
+                                except Exception as e:
+                                    st.error(f"❌ Falha na comunicação: {e}")
+
 
 # =============================================================================
 # 10. MAIN
