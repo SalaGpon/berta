@@ -1,1962 +1,2225 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot Telegram Unificado - VERSÃO 10.76 + OPERAÇÕES + SUPERVISOR + PLANILHA DE PENDÊNCIAS
+BERTA — Painel Operacional do Supervisor v3.5
+Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario | Justificativas
+Fonte de dados: Repositório (API)
 """
 
 import os
-import logging
-import pandas as pd
-from datetime import datetime, timedelta, time
-from typing import Optional, Dict, Any, List
 import re
-import unicodedata
-import tempfile
-from functools import wraps
-import requests  # NOVO: para envio à planilha
+import base64
+import io
+import requests
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import streamlit as st
 
 # =============================================================================
-# IMPORTAÇÕES CONDICIONAIS (OCR)
+# 1. CONFIGURAÇÃO DA PÁGINA
 # =============================================================================
-try:
-    import pytesseract
-    from PIL import Image
-    pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
-    OCR_DISPONIVEL = True
-except ImportError:
-    OCR_DISPONIVEL = False
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-    CallbackQueryHandler,
-    ConversationHandler,
+st.set_page_config(
+    layout="wide",
+    page_title="BERTA - Painel Operacional",
+    page_icon="📡",
+    initial_sidebar_state="expanded",
 )
-from telegram.constants import ParseMode
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-if not OCR_DISPONIVEL:
-    logger.warning("⚠️ pytesseract ou PIL não instalados. OCR desabilitado para pendências.")
 
 # =============================================================================
-# CONFIGURAÇÕES
+# 2. CSS GLOBAL
 # =============================================================================
 
-TOKEN = os.getenv("BERTA_TOKEN", "")
-if not TOKEN:
-    raise RuntimeError("BERTA_TOKEN não definido")
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CAMINHO_BASE_BOT = os.path.join(BASE_DIR, 'BASEBOT.csv')
-CAMINHO_PRESENCA = os.path.join(BASE_DIR, 'presenca.xlsx')
-if not os.path.exists(CAMINHO_PRESENCA):
-    CAMINHO_PRESENCA = os.path.join(BASE_DIR, 'Presença.xlsx')
+html, body { margin: 0; padding: 0; }
+* { font-family: 'Inter', sans-serif !important; box-sizing: border-box; }
 
-# Grupo para envio de pendências
-GRUPO_PENDENCIAS_ID = -1003695819937
-
-# Supervisores permitidos
-SUPERVISORES_PERMITIDOS = ["DANIEL OLIVEIRA", "TIAGO FRANCA", "DANIEL", "TIAGO"]
-
-# URL do Web App para salvar pendências na planilha (ATUALIZE COM A SUA URL REAL)
-URL_SALVAR_PENDENCIA = "https://script.google.com/macros/s/AKfycbwVRI7v5XcEXTbqvcYAvOvAeIS693_6kdz1bqpnalddcmTyEwsCKy3-8UnMLut8VcaQjQ/exec"
-
-_df_cache = {
-    'base': None,
-    'base_timestamp': None,
-    'presenca': None,
-    'presenca_timestamp': None
+.stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+[data-testid="block-container"],
+.main, .block-container,
+section.main > div,
+div[data-testid="stVerticalBlock"] {
+    background-color: #f5f7fa !important;
+    color: #1a2332 !important;
 }
-CACHE_DURATION = 300
-_supervisores_cache = {}
+
+[data-testid="stSidebar"] {
+    background-color: #ffffff !important;
+    border-right: 1px solid #dde3ed !important;
+}
+[data-testid="stSidebar"] * { color: #1a2332 !important; }
+[data-testid="stSidebar"] hr { border-color: #dde3ed !important; }
+
+[data-baseweb="select"] > div,
+[data-baseweb="input"] > div {
+    background-color: #ffffff !important;
+    border-color: #dde3ed !important;
+    color: #1a2332 !important;
+}
+[data-baseweb="select"] span,
+[data-baseweb="select"] div { color: #1a2332 !important; }
+[data-baseweb="popover"] { background: #ffffff !important; }
+[role="listbox"] { background: #ffffff !important; }
+[role="option"] { color: #1a2332 !important; }
+
+[data-baseweb="tab-list"] {
+    background-color: #ffffff !important;
+    border-bottom: 2px solid #dde3ed !important;
+}
+[data-baseweb="tab"] {
+    color: #64748b !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    padding: 10px 20px !important;
+    background: transparent !important;
+}
+[aria-selected="true"] {
+    color: #1e3a5f !important;
+    border-bottom: 2px solid #1e3a5f !important;
+    background: transparent !important;
+}
+[data-baseweb="tab-panel"] { background-color: transparent !important; }
+[data-baseweb="tab-border"] { background-color: #dde3ed !important; }
+
+.stDataFrame,
+[data-testid="stDataFrameResizable"],
+[data-testid="stDataFrameContainer"] {
+    background-color: #ffffff !important;
+    border: 1px solid #dde3ed !important;
+    border-radius: 8px !important;
+}
+
+.stButton > button {
+    background-color: #1e3a5f !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-weight: 600 !important;
+}
+.stButton > button:hover { background-color: #163050 !important; }
+
+[data-baseweb="tag"] {
+    background-color: #e8f0fa !important;
+    color: #1e3a5f !important;
+}
+
+.stRadio label { color: #1a2332 !important; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #f5f7fa; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+
+.kpi-card {
+    background: #ffffff;
+    border: 1px solid #dde3ed;
+    border-radius: 10px;
+    padding: 16px 14px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    min-height: 100px;
+}
+.kpi-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--accent, #1e3a5f);
+}
+.kpi-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-bottom: 6px;
+}
+.kpi-value {
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 26px;
+    font-weight: 700;
+    color: #1a2332;
+    line-height: 1;
+}
+.kpi-sub { font-size: 10px; color: #94a3b8; margin-top: 5px; }
+.kpi-blue   { --accent: #1e3a5f; }
+.kpi-green  { --accent: #16a34a; }
+.kpi-yellow { --accent: #d97706; }
+.kpi-red    { --accent: #dc2626; }
+.kpi-purple { --accent: #7c3aed; }
+
+.sec {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    color: #1e3a5f;
+    border-left: 3px solid #1e3a5f;
+    padding-left: 10px;
+    margin: 22px 0 10px 0;
+}
+
+.ph {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 0 18px 0;
+    border-bottom: 1px solid #dde3ed;
+    margin-bottom: 18px;
+}
+.ph h1 { font-size: 20px; font-weight: 700; color: #1a2332; margin: 0; }
+.badge {
+    background: #e8f0fa;
+    border: 1px solid #bdd0ea;
+    color: #1e3a5f;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+.badge-sup { background: #f0f4f8; border-color: #cbd5e1; color: #475569; }
+
+.banner-sup {
+    background: #e8f0fa;
+    border: 1px solid #bdd0ea;
+    border-radius: 6px;
+    padding: 8px 14px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: #1e3a5f;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # =============================================================================
-# FUNÇÕES DE UTILIDADE
+# 3. CONSTANTES
 # =============================================================================
 
-def limpar_cache():
-    global _df_cache, _supervisores_cache
-    _df_cache = {'base': None, 'base_timestamp': None, 'presenca': None, 'presenca_timestamp': None}
-    _supervisores_cache = {}
-    logger.info("🧹 Cache limpo")
+_DIR = os.path.dirname(os.path.abspath(__file__))
+CAMINHO_BASE_LOCAL = next(
+    (p for p in [
+        os.path.join(_DIR, "BASEBOT.csv"),
+        os.path.join(_DIR, "bases", "BASEBOT.csv"),
+    ] if os.path.exists(p)),
+    None,
+)
 
-def cache_valido(tipo: str) -> bool:
-    ts = _df_cache.get(f'{tipo}_timestamp')
-    return ts is not None and (datetime.now() - ts).total_seconds() < CACHE_DURATION
+C = {
+    "bg":     "#ffffff",
+    "paper":  "#ffffff",
+    "grid":   "#e8edf3",
+    "txt":    "#475569",
+    "navy":   "#1e3a5f",
+    "navy2":  "#2d5a8e",
+    "navy3":  "#4a7db5",
+    "green":  "#16a34a",
+    "yellow": "#d97706",
+    "red":    "#dc2626",
+    "purple": "#7c3aed",
+}
+ROYAL = "#1e3a5f"
+ROYAL_LIGHT = "#4a7db5"
 
-def remover_acentos(texto: str) -> str:
-    if not isinstance(texto, str):
-        return str(texto) if texto is not None else ''
-    return ''.join(c for c in unicodedata.normalize('NFKD', texto) if not unicodedata.combining(c))
+_LYT = dict(
+    paper_bgcolor=C["paper"],
+    plot_bgcolor=C["bg"],
+    font=dict(family="Inter, sans-serif", color=C["txt"], size=12),
+    margin=dict(l=40, r=20, t=44, b=36),
+    xaxis=dict(gridcolor=C["grid"], linecolor=C["grid"], zeroline=False, tickfont_color=C["txt"]),
+    yaxis=dict(gridcolor=C["grid"], linecolor=C["grid"], zeroline=False, tickfont_color=C["txt"]),
+    legend=dict(bgcolor="rgba(255,255,255,.9)", bordercolor=C["grid"], borderwidth=1, font_color=C["txt"]),
+)
 
-def extrair_codigo_tecnico(tecnico_str) -> Optional[str]:
+URL_JUSTIFICATIVA = "https://script.google.com/macros/s/AKfycbzBQjCcxSMrKBlUH3H6PY4I1AvF_XKTvJcHKXsHFT6HI7J-MONPeLXTEvZZOo5da4-y/exec"
+URL_ATAS_DRIVE    = "https://script.google.com/macros/s/AKfycbyEw2E759E79Tpy3wbgZt8tip6F82aYtQiZ33-CoIpcExiUX5dUXynoBqYzJaa-fPk7DA/exec"
+
+# =============================================================================
+# 4. CARREGAMENTO DO DATAFRAME
+# =============================================================================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def carregar_base_repositorio():
     try:
-        if pd.isna(tecnico_str):
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        if not token:
+            st.warning("🔑 Token de acesso não configurado. Contate o administrador.")
             return None
-        match = re.search(r'(TR\d+|TT\d+|TC\d+)', str(tecnico_str).strip())
-        return match.group(1) if match else None
-    except:
+
+        headers = {"Authorization": f"token {token}"}
+        meta_url = "https://api.github.com/repos/SalaGpon/Berta-bot/contents/BASEBOT.csv"
+        meta = requests.get(meta_url, headers=headers, timeout=30)
+        if meta.status_code != 200:
+            st.warning(f"Erro ao acessar repositório: HTTP {meta.status_code}")
+            return None
+
+        sha = meta.json().get("sha")
+        blob_url = f"https://api.github.com/repos/SalaGpon/Berta-bot/git/blobs/{sha}"
+        blob_resp = requests.get(blob_url, headers=headers, timeout=60)
+        if blob_resp.status_code != 200:
+            st.warning(f"Erro ao baixar arquivo: HTTP {blob_resp.status_code}")
+            return None
+
+        b64_content = blob_resp.json().get("content")
+        if not b64_content:
+            st.warning("Arquivo vazio no repositório.")
+            return None
+
+        texto = base64.b64decode(b64_content).decode("utf-8-sig", errors="replace")
+
+        for sep in ["\t", ";", ","]:
+            try:
+                df = pd.read_csv(
+                    io.StringIO(texto),
+                    sep=sep,
+                    dtype=str,
+                    engine="python",
+                    on_bad_lines="warn",
+                    encoding="utf-8-sig"
+                )
+                if df.shape[1] > 5:
+                    st.success(f"✅ Base carregada do Repositório (API) – separador detectado: '{sep}'")
+                    return df
+            except Exception:
+                continue
+
+        try:
+            df = pd.read_csv(
+                io.StringIO(texto),
+                sep=None,
+                dtype=str,
+                engine="python",
+                on_bad_lines="warn"
+            )
+            if df.shape[1] > 5:
+                st.success("✅ Base carregada do Repositório (API) – separador automático")
+                return df
+        except Exception as e:
+            st.warning(f"Não foi possível ler o arquivo do repositório: {e}")
+
         return None
 
-def extrair_codigo_do_tecnico(tecnico_dict: Dict[str, Any]) -> Optional[str]:
-    funcionario = str(tecnico_dict.get('funcionario') or '').strip()
-    if funcionario:
-        c = extrair_codigo_tecnico(funcionario)
-        if c:
-            return c.upper()
-    for k in ['tc', 'tr', 'tt']:
-        v = str(tecnico_dict.get(k) or '').strip().upper()
-        if v and re.match(r'^(TR|TT|TC)\d+$', v, re.IGNORECASE):
-            return v
+    except Exception as e:
+        st.warning(f"Erro ao carregar do repositório: {e}")
+        return None
+
+
+@st.cache_data(ttl=300)
+def carregar_base_local():
+    if not CAMINHO_BASE_LOCAL:
+        return None
+    try:
+        for sep in ["\t", ";", ","]:
+            try:
+                df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=sep, dtype=str, engine="python", on_bad_lines="warn")
+                if df.shape[1] > 5:
+                    st.success(f"✅ Base carregada do arquivo local – separador '{sep}'")
+                    return df
+            except Exception:
+                continue
+        df = pd.read_csv(CAMINHO_BASE_LOCAL, sep=None, dtype=str, engine="python", on_bad_lines="warn")
+        if df.shape[1] > 5:
+            st.success("✅ Base carregada do arquivo local – separador automático")
+            return df
+    except Exception as e:
+        st.error(f"Erro ao carregar arquivo local: {e}")
     return None
 
-def extrair_nome_tecnico(tecnico_dict: Dict[str, Any]) -> Optional[str]:
-    func = tecnico_dict.get('funcionario', '')
-    if ' - ' in func:
-        return func.split(' - ')[0].strip()
-    return func.strip() if func else tecnico_dict.get('nome')
 
-def formatar_data(data) -> str:
+def carregar_base():
+    df = carregar_base_repositorio()
+    if df is None:
+        df = carregar_base_local()
+    if df is not None:
+        return _processar_df(df)
+    return None
+
+
+def _processar_df(df):
+    df.columns = df.columns.str.strip()
+
+    col_fim = "DH_FIM_EXEC_REAL"
+    col_ab  = "AB_BA"
+    col_estado = "ESTADO"
+    col_macro  = "MACRO"
+    col_tecnico = "TECNICO_EXECUTOR"
+    col_territorio = "TERRITORIO"
+    col_sa = "SA"
+    col_gpon = "GPON"
+    col_descricao = "DESCRICAO"
+    col_obs = "OBSERVACAO"
+    col_cod_fechamento = "COD_FECHAMENTO"
+    col_flag_sucesso = "FLAG_FECHADO_SUCESSO"
+    col_flag_sem_sucesso = "FLAG_FECHADO_SEM_SUCESSO"
+
+    for c in [col_fim, col_ab, col_estado, col_macro, col_tecnico, col_territorio, col_sa, col_gpon]:
+        if c not in df.columns:
+            raise KeyError(f"Coluna '{c}' não encontrada. Colunas disponíveis: {list(df.columns)}")
+
+    df["FIM_DT"] = pd.to_datetime(df[col_fim], dayfirst=True, errors="coerce")
+    df["AB_DT"]  = pd.to_datetime(df[col_ab],  dayfirst=True, errors="coerce")
+
+    df["Estado"]  = df[col_estado].str.strip().str.upper()
+    df["Macro Atividade"] = df[col_macro].str.strip().str.upper()
+
+    df["NOME_TEC"] = df[col_tecnico].apply(
+        lambda v: str(v).split(" - ")[0].strip().title() if pd.notna(v) and " - " in str(v) else str(v).strip().title()
+    )
+
+    def _extrair_cod(nome):
+        if pd.isna(nome) or not nome:
+            return ""
+        m = re.search(r"(TR|TT|TC)\d+", str(nome), re.I)
+        return m.group(0).upper() if m else ""
+    df["CODIGO_TECNICO_EXTRAIDO"] = df[col_tecnico].apply(_extrair_cod)
+
+    df["DIA_FIM"] = df["FIM_DT"].dt.date
+    df["MES_FIM"] = df["FIM_DT"].dt.to_period("M")
+    df["SEM_FIM"] = df["FIM_DT"].dt.isocalendar().week.astype("Int64")
+    df["ANO_FIM"] = df["FIM_DT"].dt.year.astype("Int64")
+    df["DIA_AB"]  = df["AB_DT"].dt.date
+    df["MES_AB"]  = df["AB_DT"].dt.to_period("M")
+    df["SEM_AB"]  = df["AB_DT"].dt.isocalendar().week.astype("Int64")
+
+    df["FLAG_CONCLUIDO_SUCESSO"] = df.get(col_flag_sucesso, "NAO")
+    df["FLAG_CONCLUIDO_SEM_SUCESSO"] = df.get(col_flag_sem_sucesso, "NAO")
+
+    df["FLAG_REPARO_VALIDO"] = (
+        (df["Macro Atividade"] == "REP-FTTH") &
+        (df["FLAG_CONCLUIDO_SUCESSO"] == "SIM")
+    ).map({True: "SIM", False: "NAO"})
+    df["FLAG_INSTALACAO_VALIDA"] = (
+        (df["Macro Atividade"] == "INST-FTTH") &
+        (df["FLAG_CONCLUIDO_SUCESSO"] == "SIM")
+    ).map({True: "SIM", False: "NAO"})
+
+    for _f in ("FLAG_REPETIDO_ABERTO", "FLAG_P0_10_DIA", "FLAG_P0_15_DIA",
+               "FLAG_REPETIDO", "FLAG_INFANCIA", "FLAG_INF",
+               "TEC_ANTERIOR", "IF_DIAS"):
+        if _f not in df.columns:
+            df[_f] = "NAO"
+        else:
+            df[_f] = df[_f].fillna("NAO")
+
+    df["FLAG_REPETIDO_30D"] = df["FLAG_REPETIDO"]
+    df["FLAG_INFANCIA_30D"]  = df["FLAG_INFANCIA"]
+
+    if "ALARMADO" not in df.columns:
+        df["ALARMADO"] = "NAO"
+    else:
+        df["ALARMADO"] = df["ALARMADO"].fillna("NAO")
+
+    if "CDOE" not in df.columns:
+        df["CDOE"] = ""
+    else:
+        df["CDOE"] = df["CDOE"].fillna("")
+
+    if "LOGRADOURO" in df.columns:
+        df["Logradouro"] = df["LOGRADOURO"].fillna("")
+    if "NUMERO" in df.columns:
+        df["Número"] = df["NUMERO"].fillna("")
+    if "BAIRRO" in df.columns:
+        df["Bairro"] = df["BAIRRO"].fillna("")
+
+    df["Território de serviço: Nome"] = df[col_territorio]
+    df["Número SA"] = df[col_sa]
+    df["FSLOI_GPONAccess"] = df[col_gpon]
+    df["Técnico Atribuído"] = df[col_tecnico]
+
+    if "Descrição" not in df.columns:
+        df["Descrição"] = df.get(col_descricao, "")
+    if "Observação" not in df.columns:
+        df["Observação"] = df.get(col_obs, "")
+    if "Código de encerramento" not in df.columns:
+        df["Código de encerramento"] = df.get(col_cod_fechamento, "")
+
+    return df
+
+
+def extrair_codigo_tecnico(tecnico_str) -> str:
     try:
-        if pd.isna(data):
-            return 'N/A'
-        if isinstance(data, (pd.Timestamp, datetime)):
-            return data.strftime('%d/%m/%Y %H:%M')
-        return str(data)
+        m = re.search(r'(TR\d+|TT\d+|TC\d+)', str(tecnico_str).strip())
+        return m.group(1).upper() if m else ""
     except:
-        return 'N/A'
+        return ""
 
-def formatar_data_simples(data) -> str:
-    try:
-        if pd.isna(data):
-            return 'N/A'
-        if isinstance(data, (pd.Timestamp, datetime)):
-            return data.strftime('%d/%m/%Y')
-        return str(data)
-    except:
-        return 'N/A'
 
-def classificar_velocidade(velocidade) -> str:
-    try:
-        if pd.isna(velocidade):
-            return "DESCONHECIDA"
-        vel = float(re.sub(r'[^\d.]', '', str(velocidade).replace(',', '.')))
-        if vel < 600:
-            return "BAIXA"
-        if vel <= 999:
-            return "ALTA"
-        return "GIGA"
-    except:
-        return "DESCONHECIDA"
+@st.cache_data(ttl=600)
+def carregar_equipes(df=None):
+    if df is None:
+        df = carregar_base()
+    equipes = {}
+    if df is not None:
+        for _, row in df.iterrows():
+            sup = str(row.get("SUPERVISOR", "")).strip()
+            if not sup or sup.upper() in ("", "NAN", "NONE"):
+                continue
+            sup = sup.title()
+            cod = str(row.get("TR", "")).strip().upper()
+            if not cod:
+                cod = extrair_codigo_tecnico(row.get("TECNICO_EXECUTOR", ""))
+            if not cod:
+                continue
+            equipes.setdefault(sup, [])
+            if cod not in equipes[sup]:
+                equipes[sup].append(cod)
 
-def normalizar_codigo(codigo):
-    if not codigo:
-        return None
-    codigo = str(codigo).upper().strip()
-    return re.sub(r'[^0-9]', '', codigo)
+    if not equipes:
+        st.info("Equipes não encontradas no BASEBOT.csv, tentando planilha de presença...")
+        try:
+            import openpyxl
+            url_presenca = "https://raw.githubusercontent.com/SalaGpon/Berta-bot/main/Presen%C3%A7a.xlsx"
+            r = requests.get(url_presenca, timeout=30)
+            if r.status_code == 200:
+                wb = openpyxl.load_workbook(io.BytesIO(r.content), read_only=True)
+                ws = wb.active
+                rows = list(ws.iter_rows(min_row=2, values_only=True))
+                if rows:
+                    headers = [cell.value for cell in ws[1]]
+                    tr_col = next((i for i, h in enumerate(headers) if h and "TR" in str(h).upper()), None)
+                    sup_col = next((i for i, h in enumerate(headers) if h and "SUPERVISOR" in str(h).upper()), None)
+                    if tr_col is not None and sup_col is not None:
+                        for row in rows:
+                            tr = str(row[tr_col]).strip().upper() if row[tr_col] else None
+                            sup = str(row[sup_col]).strip().title() if row[sup_col] else None
+                            if tr and sup:
+                                equipes.setdefault(sup, [])
+                                if tr not in equipes[sup]:
+                                    equipes[sup].append(tr)
+                wb.close()
+                if equipes:
+                    st.success("✅ Equipes carregadas da planilha de presença")
+        except Exception as e:
+            st.warning(f"Não foi possível carregar a planilha de presença: {e}")
 
-def formatar_endereco(row) -> str:
-    parts = []
-    logr = None
-    for col in ['LOGRADOURO', 'Logradouro', 'Logradouro_cli']:
-        v = row.get(col) if isinstance(row, dict) else getattr(row, col, None)
-        if v is not None and pd.notna(v) and str(v).strip():
-            logr = str(v).strip()
-            break
-    if logr:
-        parts.append(logr)
-    num = row.get('NUMERO') or row.get('Número')
-    if num is not None and pd.notna(num) and str(num).strip():
-        parts.append(f", {str(num).strip()}")
-    bai = row.get('BAIRRO') or row.get('Bairro')
-    if bai is not None and pd.notna(bai) and str(bai).strip():
-        parts.append(f" - {str(bai).strip()}")
-    cid = row.get('CIDADE') or row.get('Cidade')
-    if cid is not None and pd.notna(cid) and str(cid).strip():
-        parts.append(f", {str(cid).strip()}")
-    return ''.join(parts) if parts else 'Endereço não disponível'
+    return equipes
+
 
 # =============================================================================
-# CARREGAMENTO DA BASE (mantido)
+# 4B. CARREGAR MAPEAMENTO DE CAUSAS MACRO
 # =============================================================================
 
-def carregar_base(forcar_recarregar: bool = False) -> Optional[pd.DataFrame]:
-    if not forcar_recarregar and cache_valido('base') and _df_cache['base'] is not None:
-        return _df_cache['base'].copy()
+@st.cache_data(ttl=3600)
+def carregar_causas_macro():
     try:
-        if not os.path.exists(CAMINHO_BASE_BOT):
-            logger.error("BASEBOT.csv não encontrada")
-            return None
-        
-        df = pd.read_csv(CAMINHO_BASE_BOT, sep=';', encoding='utf-8-sig', low_memory=False, dtype=str)
-        logger.info(f"✅ Base carregada: {len(df)} registros")
+        url = "https://raw.githubusercontent.com/SalaGpon/Berta-bot/main/Causas.xlsx"
+        r = requests.get(url, timeout=30)
+        if r.status_code != 200:
+            raise FileNotFoundError("Arquivo de causas não encontrado.")
+        df = pd.read_excel(io.BytesIO(r.content), sheet_name="Causas", dtype=str)
         df.columns = df.columns.str.strip()
-        
-        # Filtro UF=SC
-        if "UF" in df.columns:
-            antes = len(df)
-            df = df[df["UF"].astype(str).str.strip().str.upper() == "SC"].copy()
-            logger.info(f"✅ Filtro UF=SC: {len(df):,}/{antes:,} registros mantidos")
-        
-        # Converter datas e remover timezone
-        colunas_data = ['AB_BA', 'DH_FIM_EXEC_REAL', 'DH_INI_EXEC_REAL', 'INICIO_AG', 'DH_INICIO_EXEC_PREV']
-        for col in colunas_data:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
-                if df[col].dt.tz is not None:
-                    df[col] = df[col].dt.tz_localize(None)
-        
-        # Criar DATA_ORDENACAO com prioridade
-        df['DATA_ORDENACAO'] = None
-        if 'DH_INICIO_EXEC_PREV' in df.columns:
-            df['DATA_ORDENACAO'] = df['DATA_ORDENACAO'].fillna(df['DH_INICIO_EXEC_PREV'])
-        if 'INICIO_AG' in df.columns:
-            df['DATA_ORDENACAO'] = df['DATA_ORDENACAO'].fillna(df['INICIO_AG'])
-        if 'AB_BA' in df.columns:
-            df['DATA_ORDENACAO'] = df['DATA_ORDENACAO'].fillna(df['AB_BA'])
-        df['DATA_ORDENACAO'] = df['DATA_ORDENACAO'].fillna(datetime.now())
-        
-        df['AB_DT'] = df['DATA_ORDENACAO']
-        if 'DH_FIM_EXEC_REAL' in df.columns:
-            df['FIM_DT'] = df['DH_FIM_EXEC_REAL']
-        
-        # Garantir flags
-        for col, default in [('FLAG_REPETIDO', 'NAO'), ('FLAG_INFANCIA', 'NAO'), ('ALARMADO', 'NAO')]:
-            if col not in df.columns:
-                df[col] = default
-            else:
-                df[col] = df[col].fillna(default).astype(str).str.strip().str.upper()
-        
-        if 'CDOE' not in df.columns:
-            df['CDOE'] = ''
-        
-        _df_cache['base'] = df
-        _df_cache['base_timestamp'] = datetime.now()
-        logger.info(f"✅ Base pronta: {len(df)} registros")
-        return df.copy()
+        mapa = {}
+        for _, row in df.iterrows():
+            cod = str(row.get("cod_fechamento", "")).strip()
+            causa = str(row.get("Causa Macro", "")).strip()
+            if cod and causa:
+                mapa[cod] = causa
+        return mapa
     except Exception as e:
-        logger.error(f"Erro ao carregar base: {e}", exc_info=True)
-        return None
+        st.warning("Não foi possível carregar a planilha de causas macro. Usando descrições originais.")
+        return {}
 
-def carregar_presenca(forcar_recarregar: bool = False) -> Optional[pd.DataFrame]:
-    if not forcar_recarregar and cache_valido('presenca') and _df_cache['presenca'] is not None:
-        return _df_cache['presenca'].copy()
-    try:
-        if not os.path.exists(CAMINHO_PRESENCA):
-            return None
-        df = pd.read_excel(CAMINHO_PRESENCA, sheet_name='Técnicos', dtype=str)
-        _df_cache['presenca'] = df
-        _df_cache['presenca_timestamp'] = datetime.now()
-        logger.info("✅ Presença carregada")
-        return df.copy()
-    except Exception as e:
-        logger.error(f"Erro ao carregar presença: {e}")
-        return None
 
 # =============================================================================
-# AUTENTICAÇÃO (MOCK)
+# 5. HELPERS
 # =============================================================================
 
-async def autenticar_tecnico(telegram_id: int, matricula: str) -> Optional[Dict[str, Any]]:
-    matricula = matricula.strip().upper()
-    logger.info(f"🔐 Autenticando {matricula}")
-    if re.match(r'^(TR|TT|TC)\d+$', matricula):
-        return {
-            'funcionario': f'Técnico {matricula}',
-            'tr': matricula,
-            'supervisor': 'Daniel Oliveira',
-            'setor_atual': 'Joinville',
-            'telegram_id': telegram_id
-        }
-    return None
+def _kpi(label, valor, sub="", cls="kpi-blue"):
+    s = f'<div class="kpi-sub">{sub}</div>' if sub else ""
+    return (f'<div class="kpi-card {cls}">'
+            f'<div class="kpi-label">{label}</div>'
+            f'<div class="kpi-value">{valor}</div>'
+            f'{s}</div>')
 
-def verificar_autenticacao(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    return 'tecnico' in context.user_data
 
-def verificar_supervisor_autenticado(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    return context.user_data.get('modo_supervisor', False)
+def _sec(txt):
+    st.markdown(f'<div class="sec">{txt}</div>', unsafe_allow_html=True)
 
-def usuario_autorizado(context: ContextTypes.DEFAULT_TYPE) -> bool:
-    if context.user_data.get('modo_supervisor', False):
-        nome_supervisor = context.user_data.get('nome_supervisor', '')
-        return any(permitido in nome_supervisor.upper() for permitido in SUPERVISORES_PERMITIDOS)
-    tecnico = context.user_data.get('tecnico', {})
-    if not tecnico:
-        return False
-    supervisor = tecnico.get('supervisor', '').upper().strip()
-    return any(permitido in supervisor for permitido in SUPERVISORES_PERMITIDOS)
 
-def acesso_restringido(func):
-    @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if not usuario_autorizado(context):
-            await update.message.reply_text(
-                "🚧 Ferramenta em teste exclusiva da equipe de Joinville.\n"
-                "Procure seu supervisor para mais informações."
-            )
-            return
-        return await func(update, context, *args, **kwargs)
-    return wrapper
+def _header(icone, titulo, f):
+    mes = f.get("mes", "")
+    sup = f.get("supervisor", "")
+    sup_b = f'<span class="badge badge-sup">👑 {sup}</span>' if sup else ""
+    st.markdown(
+        f'<div class="ph"><h1>{icone} {titulo}</h1>'
+        f'<span class="badge">{mes}</span>{sup_b}</div>',
+        unsafe_allow_html=True)
+
+
+def _lyt(titulo="", h=360):
+    return {**_LYT, "height": h,
+            "title": dict(text=titulo, font=dict(size=13, color="#1a2332"), x=0.01)}
+
+
+def _bar_h(y, x, color, titulo="", h=340, labels=None):
+    fig = go.Figure(go.Bar(
+        x=x, y=y, orientation="h", marker_color=color,
+        text=labels, textposition="inside", textfont_color="white"))
+    fig.update_layout(**_lyt(titulo, h))
+    fig.update_layout(yaxis_autorange="reversed")
+    return fig
+
+
+def _ev_dual(x, bars, line, bcolor, titulo, h=300, meta=None):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_bar(x=x, y=bars, name="Qtd", marker_color=bcolor)
+    fig.add_scatter(x=x, y=line, name="Taxa%", mode="lines+markers",
+                    line=dict(color=ROYAL_LIGHT, width=2), marker_size=6, secondary_y=True)
+    if meta is not None:
+        fig.add_hline(y=meta, line_dash="dash", line_color=C["yellow"],
+                      annotation_text=f"Meta {meta}%", secondary_y=True)
+    fig.update_layout(**_lyt(titulo, h))
+    fig.update_yaxes(showgrid=False, secondary_y=True)
+    return fig
+
 
 # =============================================================================
-# CONSULTAS POR TÉCNICO (mantidas)
+# 6. SIDEBAR
 # =============================================================================
 
-def _filtrar_tecnico(df: pd.DataFrame, codigo_tecnico: str = None, nome_tecnico: str = None) -> pd.DataFrame:
-    mask_total = pd.Series(False, index=df.index)
-    if codigo_tecnico:
-        cod_upper = codigo_tecnico.strip().upper()
-        if 'TR' in df.columns:
-            mask_total |= df['TR'].astype(str).str.strip().str.upper() == cod_upper
-        if 'TECNICO_EXECUTOR' in df.columns:
-            mask_total |= df['TECNICO_EXECUTOR'].astype(str).str.upper().str.contains(cod_upper, na=False)
-    if nome_tecnico and 'TECNICO_EXECUTOR' in df.columns:
-        mask_total |= df['TECNICO_EXECUTOR'].astype(str).str.upper().str.contains(nome_tecnico.upper(), na=False)
-    return df[mask_total].reset_index(drop=True)
+def sidebar(df):
+    with st.sidebar:
+        st.markdown(
+            '<div style="text-align:center;padding:18px 0 10px">'
+            '<div style="font-size:22px;font-weight:800;color:#1e3a5f;letter-spacing:2px">📡 BERTA</div>'
+            '<div style="font-size:10px;color:#64748b;font-weight:600;letter-spacing:1px;margin-top:3px">PAINEL OPERACIONAL</div>'
+            '</div>', unsafe_allow_html=True)
+        st.divider()
 
-def get_atividades_por_tecnico(codigo_tecnico=None, nome_tecnico=None, tipo='futuras', dias=30):
-    df = carregar_base()
-    if df is None:
-        return None
-    df = df.copy()
-    
-    df_tec = _filtrar_tecnico(df, codigo_tecnico, nome_tecnico)
-    if df_tec.empty:
-        return pd.DataFrame()
-    
-    hoje = datetime.now()
-    data_limite = hoje - timedelta(days=dias)
-    
-    if tipo == 'futuras':
-        estados_concluidos = ['CONCLUÍDO COM SUCESSO', 'CONCLUÍDO SEM SUCESSO', 'CANCELADO']
-        df_tec['ESTADO'] = df_tec['ESTADO'].astype(str).str.strip().str.upper()
-        mask_nao_concluida = ~df_tec['ESTADO'].isin(estados_concluidos)
-        atividades = df_tec[mask_nao_concluida]
-    elif tipo == 'encerradas':
-        if 'DH_FIM_EXEC_REAL' not in df_tec.columns:
-            return pd.DataFrame()
-        df_tec['DH_FIM_EXEC_REAL'] = pd.to_datetime(df_tec['DH_FIM_EXEC_REAL'], errors='coerce')
-        df_tec = df_tec[df_tec['DH_FIM_EXEC_REAL'].notna()]
-        mask_encerradas = df_tec['ESTADO'].isin(['CONCLUÍDO COM SUCESSO', 'CONCLUÍDO SEM SUCESSO'])
-        mask_encerradas &= (df_tec['DH_FIM_EXEC_REAL'] >= data_limite)
-        atividades = df_tec[mask_encerradas]
-    else:
-        atividades = df_tec
-    
-    colunas = ['SA', 'MACRO', 'DATA_ORDENACAO', 'AB_DT', 'DH_FIM_EXEC_REAL', 'ESTADO', 'CIDADE', 'BAIRRO', 'LOGRADOURO',
-               'NUMERO', 'DESCRICAO', 'GPON', 'INICIO_AG', 'DH_INICIO_EXEC_PREV', 'VELOCIDADE', 'ALARMADO', 'CDOE', 'FLAG_REPETIDO']
-    colunas = [c for c in colunas if c in atividades.columns]
-    
-    if not colunas:
-        return pd.DataFrame()
-    
-    atividades = atividades[colunas]
-    if 'DATA_ORDENACAO' in atividades.columns:
-        atividades = atividades.sort_values('DATA_ORDENACAO', ascending=True)
-    elif tipo == 'encerradas' and 'DH_FIM_EXEC_REAL' in atividades.columns:
-        atividades = atividades.sort_values('DH_FIM_EXEC_REAL', ascending=False)
-    
-    return atividades
+        tela = st.radio("Tela",
+            ["📅 Diario", "📊 Producao Diaria", "🔁 Repetidos", "👶 Infancia",
+             "📆 Calendario", "🏆 Qualidade", "📝 Justificativas"],
+            label_visibility="collapsed", key="nav")
+        st.divider()
 
-def get_alarmados_por_tecnico(codigo_tecnico=None, nome_tecnico=None):
-    df = carregar_base()
-    if df is None:
-        return None
-    df = df.copy()
-    if 'ALARMADO' not in df.columns:
-        return pd.DataFrame()
-    
-    df_tec = _filtrar_tecnico(df, codigo_tecnico, nome_tecnico)
-    mask_alarme = df_tec['ALARMADO'].astype(str).str.strip().str.upper() == 'SIM'
-    df_alarme = df_tec[mask_alarme].copy()
-    
-    if 'DH_FIM_EXEC_REAL' in df_alarme.columns:
-        df_alarme = df_alarme.sort_values('DH_FIM_EXEC_REAL', ascending=False)
-    return df_alarme
+        st.markdown("**Filtros**")
+        df_atual = df
 
-def get_atividades_nao_atribuidas(setor: str = None) -> Optional[pd.DataFrame]:
-    df = carregar_base()
-    if df is None:
-        return None
-    df = df.copy()
-    mask_nao_atribuido = df['TECNICO_EXECUTOR'].isna() | (df['TECNICO_EXECUTOR'].astype(str).str.strip() == '')
-    mask_aberto = df['ESTADO'].isin(['ATRIBUÍDO', 'NÃO ATRIBUÍDO', 'RECEBIDO', 'EM EXECUÇÃO', 'EM DESLOCAMENTO', 'PENDENTE'])
-    if setor:
-        if 'TERRITORIO' in df.columns:
-            mask_setor = df['TERRITORIO'].astype(str).str.upper() == setor.upper()
-            df_filtrado = df[mask_nao_atribuido & mask_aberto & mask_setor]
+        meses = sorted(df_atual["MES_FIM"].dropna().astype(str).unique(), reverse=True)
+        mes_padrao = datetime.now().strftime("%Y-%m")
+        mes_idx = meses.index(mes_padrao) if mes_padrao in meses else 0
+        mes = st.selectbox("📅 Mes", meses, index=mes_idx, key="f_mes")
+
+        eq = carregar_equipes(df_atual)
+        sups = sorted(eq.keys())
+        if sups:
+            sup = st.selectbox("👑 Supervisor", ["— Todos —"] + sups, key="f_sup")
+            tecs_sup = eq.get(sup, []) if sup != "— Todos —" else []
+            if tecs_sup:
+                st.caption(f"Equipe: {len(tecs_sup)} tecnico(s)")
         else:
-            df_filtrado = df[mask_nao_atribuido & mask_aberto]
-    else:
-        df_filtrado = df[mask_nao_atribuido & mask_aberto]
-    if df_filtrado.empty:
-        return pd.DataFrame()
-    colunas = ['SA', 'MACRO', 'DATA_ORDENACAO', 'ESTADO', 'CIDADE', 'BAIRRO', 'LOGRADOURO', 'NUMERO', 'GPON', 'VELOCIDADE']
-    colunas = [c for c in colunas if c in df_filtrado.columns]
-    return df_filtrado[colunas].sort_values('DATA_ORDENACAO', ascending=True)
+            sup, tecs_sup = "— Todos —", []
 
-def formatar_atividades(df, titulo, max_itens=50, ver_todas=False):
-    if df is None or df.empty:
-        return f"📭 {titulo}:\nNenhuma atividade encontrada."
-    
-    it = df.iterrows() if ver_todas else df.head(max_itens).iterrows()
-    msg = f"📋 {titulo} ({len(df)}):\n\n"
-    
-    for _, row in it:
-        if len(msg) > 3500 and not ver_todas:
-            msg += "... (mais atividades não mostradas)"
-            break
-        
-        msg += f"🔹 SA: {row.get('SA','N/A')}\n"
-        if 'MACRO' in row:
-            msg += f"   Tipo: {row['MACRO']}\n"
-        if 'GPON' in row and pd.notna(row['GPON']):
-            msg += f"   GPON: {row['GPON']}\n"
-            rep = str(row.get('FLAG_REPETIDO','')).strip().upper()
-            msg += f"   {'⚠️' if rep == 'SIM' else '✅'} Repetido: {rep}\n"
-        if 'CDOE' in row and pd.notna(row['CDOE']) and str(row['CDOE']).strip() not in ('', 'nan'):
-            msg += f"   📦 CDOE: {row['CDOE']}\n"
-        if 'VELOCIDADE' in row and pd.notna(row['VELOCIDADE']) and str(row['VELOCIDADE']).strip() not in ('', '0', 'nan'):
-            try:
-                vel = float(re.sub(r'[^\d.]', '', str(row['VELOCIDADE']).replace(',', '.')))
-                classe = classificar_velocidade(vel)
-                msg += f"   ⚡ Velocidade: {vel:.0f} Mbps ({classe})\n"
-            except:
-                pass
-        if 'ALARMADO' in row and str(row['ALARMADO']).strip().upper() == 'SIM':
-            msg += f"   🚨 Alarmado: SIM\n"
-        
-        # Mostrar a data mais relevante
-        if 'DH_INICIO_EXEC_PREV' in row and pd.notna(row['DH_INICIO_EXEC_PREV']):
-            msg += f"   📅 Execução Prevista: {row['DH_INICIO_EXEC_PREV'].strftime('%d/%m/%Y %H:%M')}\n"
-        elif 'INICIO_AG' in row and pd.notna(row['INICIO_AG']):
-            msg += f"   📅 Agendamento: {row['INICIO_AG'].strftime('%d/%m/%Y %H:%M')}\n"
-        elif 'DATA_ORDENACAO' in row and pd.notna(row['DATA_ORDENACAO']):
-            msg += f"   📅 Abertura: {row['DATA_ORDENACAO'].strftime('%d/%m/%Y')}\n"
-        
-        end = formatar_endereco(row)
-        if end != 'Endereço não disponível':
-            msg += f"   📍 {end}\n"
-        if 'ESTADO' in row:
-            msg += f"   Status: {row['ESTADO']}\n"
-        msg += "\n"
-    
-    if not ver_todas and len(df) > max_itens:
-        msg += f"\n... e mais {len(df)-max_itens} atividades não listadas."
-    
-    return msg
+        terrs = sorted(df_atual["Território de serviço: Nome"].dropna().unique())
+        terr  = st.multiselect("📍 Territorio", terrs, key="f_terr")
 
-# =============================================================================
-# INDICADORES (mantidos)
-# =============================================================================
+        pool = ([t for t in tecs_sup if t in df_atual["CODIGO_TECNICO_EXTRAIDO"].values]
+                if tecs_sup else sorted(df_atual["CODIGO_TECNICO_EXTRAIDO"].dropna().unique()))
+        tec  = st.multiselect("👤 Tecnico", pool, key="f_tec")
 
-def contar_reparos_repetidos_por_tecnico(df: pd.DataFrame, codigo_tecnico: str, mes_ref: int = None, ano_ref: int = None) -> Dict[str, Any]:
-    try:
-        if df is None or df.empty:
-            return {'erro': 'Base não carregada'}
-        
-        hoje = datetime.now()
-        if mes_ref is None or ano_ref is None:
-            mes_ref = hoje.month
-            ano_ref = hoje.year
-        
-        primeiro_dia = datetime(ano_ref, mes_ref, 1)
-        if mes_ref == 12:
-            ultimo_dia = datetime(ano_ref + 1, 1, 1) - timedelta(days=1)
-        else:
-            ultimo_dia = datetime(ano_ref, mes_ref + 1, 1) - timedelta(days=1)
-        
-        meses_pt = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-                    'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
-        periodo = f"{meses_pt[mes_ref-1]}/{ano_ref}"
-        
-        df = df.copy()
-        if "UF" in df.columns:
-            df = df[df["UF"].astype(str).str.strip().str.upper() == "SC"]
-        
-        mask_tec = pd.Series(False, index=df.index)
-        if 'TR' in df.columns:
-            mask_tec |= df['TR'].astype(str).str.strip().str.upper() == codigo_tecnico.upper()
-        if 'TECNICO_EXECUTOR' in df.columns:
-            mask_tec |= df['TECNICO_EXECUTOR'].astype(str).str.upper().str.contains(codigo_tecnico.upper(), na=False)
-        
-        df_rep_tec = df[
-            mask_tec &
-            (df["MACRO"].astype(str).str.strip().str.upper() == "REP-FTTH") &
-            (df["ESTADO"].astype(str).str.strip().str.upper() == "CONCLUÍDO COM SUCESSO") &
-            (df["AB_DT"] >= primeiro_dia) &
-            (df["AB_DT"] <= ultimo_dia) &
-            df["AB_DT"].notna()
-        ]
-        total_reparos = len(df_rep_tec)
-        
-        if 'FLAG_REPETIDO' in df_rep_tec.columns:
-            reparos_repetidos = (df_rep_tec['FLAG_REPETIDO'] == 'SIM').sum()
-            fonte = "VIP"
-        else:
-            reparos_repetidos = 0
-            fonte = "cálculo interno"
-        
-        taxa = round(int(reparos_repetidos) / total_reparos * 100, 2) if total_reparos > 0 else 0
-        
-        logger.info(f"📊 [{codigo_tecnico}] Repetidos {periodo}: total={total_reparos}, rep={reparos_repetidos}, taxa={taxa}%")
-        
-        return {
-            'total_reparos': total_reparos,
-            'reparos_repetidos': int(reparos_repetidos),
-            'taxa': taxa,
-            'periodo': periodo,
-            'fonte': fonte,
-        }
-    except Exception as e:
-        logger.error(f"Erro: {e}", exc_info=True)
-        return {'erro': f'Erro no cálculo: {str(e)}'}
+        st.divider()
+        if st.button("🔄 Recarregar base", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
-def calcular_infancia_por_tecnico(codigo_tecnico: str = None, mes_ref: int = None, ano_ref: int = None) -> Dict[str, Any]:
-    try:
-        df = carregar_base()
-        if df is None:
-            return {'erro': 'Base não carregada'}
-        
-        hoje = datetime.now()
-        if mes_ref is None or ano_ref is None:
-            mes_ref = hoje.month
-            ano_ref = hoje.year
-        
-        primeiro_dia_mes = datetime(ano_ref, mes_ref, 1)
-        if mes_ref == 12:
-            primeiro_dia_prox = datetime(ano_ref + 1, 1, 1)
-        else:
-            primeiro_dia_prox = datetime(ano_ref, mes_ref + 1, 1)
-        
-        meses_pt = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-                    'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
-        periodo = f"{meses_pt[mes_ref-1]}/{ano_ref}"
-        
-        df = df.copy()
-        if "UF" in df.columns:
-            df = df[df["UF"].astype(str).str.strip().str.upper() == "SC"]
-        
-        mask_tec = pd.Series(False, index=df.index)
-        if 'TR' in df.columns:
-            mask_tec |= df['TR'].astype(str).str.strip().str.upper() == codigo_tecnico.upper()
-        if 'TECNICO_EXECUTOR' in df.columns:
-            mask_tec |= df['TECNICO_EXECUTOR'].astype(str).str.upper().str.contains(codigo_tecnico.upper(), na=False)
-        
-        df_tec = df[mask_tec]
-        if df_tec.empty:
-            return {'erro': f'Técnico {codigo_tecnico} não encontrado'}
-        
-        mask_inst = (
-            (df_tec['MACRO'].astype(str).str.strip().str.upper() == 'INST-FTTH') &
-            (df_tec['ESTADO'].astype(str).str.strip().str.upper() == 'CONCLUÍDO COM SUCESSO') &
-            (df_tec["AB_DT"] >= primeiro_dia_mes) &
-            (df_tec["AB_DT"] < primeiro_dia_prox) &
-            df_tec["AB_DT"].notna()
-        )
-        df_inst_periodo = df_tec[mask_inst]
-        total_instalacoes = len(df_inst_periodo)
-        
-        if total_instalacoes == 0:
-            return {'total_instalacoes': 0, 'instalacoes_infancia': 0, 'taxa_infancia': 0, 'periodo': periodo, 'fonte': 'VIP'}
-        
-        if 'FLAG_INFANCIA' in df_inst_periodo.columns:
-            instalacoes_infancia = (df_inst_periodo['FLAG_INFANCIA'] == 'SIM').sum()
-            fonte = "VIP"
-        else:
-            instalacoes_infancia = 0
-            fonte = "interno"
-        
-        taxa = round(instalacoes_infancia / total_instalacoes * 100, 2) if total_instalacoes else 0
-        
-        logger.info(f"📊 [{codigo_tecnico}] Infância {periodo}: inst={total_instalacoes}, inf={instalacoes_infancia}, taxa={taxa}%")
-        
-        return {
-            'total_instalacoes': total_instalacoes,
-            'instalacoes_infancia': int(instalacoes_infancia),
-            'taxa_infancia': taxa,
-            'periodo': periodo,
-            'fonte': fonte,
-        }
-    except Exception as e:
-        logger.error(f"Erro: {e}", exc_info=True)
-        return {'erro': f'Erro no cálculo: {str(e)}'}
-
-def calcular_p0_por_tecnico(codigo_tecnico: str) -> Dict[str, Any]:
-    try:
-        df = carregar_base()
-        if df is None:
-            return {'erro': 'Base não carregada'}
-        
-        hoje = datetime.now()
-        primeiro_dia_mes = datetime(hoje.year, hoje.month, 1)
-        status_encerrado = ['CONCLUÍDO COM SUCESSO', 'CONCLUÍDO SEM SUCESSO']
-        
-        df = df.copy()
-        mask_tec = pd.Series(False, index=df.index)
-        if 'TR' in df.columns:
-            mask_tec |= df['TR'].astype(str).str.strip().str.upper() == codigo_tecnico.upper()
-        if 'TECNICO_EXECUTOR' in df.columns:
-            mask_tec |= df['TECNICO_EXECUTOR'].astype(str).str.upper().str.contains(codigo_tecnico.upper(), na=False)
-        
-        df = df[mask_tec]
-        if 'DH_FIM_EXEC_REAL' not in df.columns:
-            return {'erro': 'Coluna DH_FIM_EXEC_REAL não encontrada'}
-        
-        df['DH_FIM_EXEC_REAL'] = pd.to_datetime(df['DH_FIM_EXEC_REAL'], dayfirst=True, errors='coerce')
-        df = df[
-            (df['DH_FIM_EXEC_REAL'].notna()) &
-            (df['ESTADO'].isin(status_encerrado)) &
-            (df['DH_FIM_EXEC_REAL'] >= primeiro_dia_mes)
-        ]
-        
-        if df.empty:
-            return {'p0_10': 0, 'p0_15': 0, 'total_dias': 0}
-        
-        df['data'] = df['DH_FIM_EXEC_REAL'].dt.date
-        df['hora'] = df['DH_FIM_EXEC_REAL'].dt.time
-        p0_10 = 0
-        p0_15 = 0
-        total_dias = 0
-        
-        for data, grupo in df.groupby('data'):
-            total_dias += 1
-            grupo = grupo.sort_values('DH_FIM_EXEC_REAL')
-            primeiro = grupo.iloc[0]
-            if primeiro['hora'] > time(10, 0):
-                p0_10 += 1
-            tarde = grupo[grupo['hora'] >= time(13, 0)]
-            if not tarde.empty:
-                primeiro_tarde = tarde.iloc[0]
-                if primeiro_tarde['hora'] > time(15, 0):
-                    p0_15 += 1
-            else:
-                p0_15 += 1
-        
-        return {'p0_10': p0_10, 'p0_15': p0_15, 'total_dias': total_dias}
-    except Exception as e:
-        logger.error(f"Erro P0: {e}")
-        return {'erro': str(e)}
-
-def analisar_velocidades_futuras_por_tecnico(codigo_tecnico: str = None, nome_tecnico: str = None) -> Dict[str, Any]:
-    try:
-        df = carregar_base()
-        if df is None:
-            return {'erro': 'Base não carregada'}
-        
-        df_tec = _filtrar_tecnico(df, codigo_tecnico, nome_tecnico)
-        if df_tec.empty:
-            return {'erro': f'Técnico não encontrado'}
-        
-        estados_abertos = ['ATRIBUÍDO', 'RECEBIDO', 'EM DESLOCAMENTO', 'EM EXECUÇÃO', 'PENDENTE']
-        mask_abertas = df_tec['ESTADO'].isin(estados_abertos)
-        df_futuras = df_tec[mask_abertas].copy()
-        
-        if df_futuras.empty:
-            return {'total': 0, 'baixa': 0, 'alta': 0, 'giga': 0, 'desconhecida': 0, 'lista': []}
-        
-        def classificar(v):
-            if pd.isna(v):
-                return 'DESCONHECIDA'
-            try:
-                vel = float(re.sub(r'[^\d.]', '', str(v).replace(',', '.')))
-                if vel < 600:
-                    return 'BAIXA'
-                elif vel <= 999:
-                    return 'ALTA'
-                else:
-                    return 'GIGA'
-            except:
-                return 'DESCONHECIDA'
-        
-        if 'VELOCIDADE' in df_futuras.columns:
-            df_futuras['CLASSE_VELOCIDADE'] = df_futuras['VELOCIDADE'].apply(classificar)
-        else:
-            df_futuras['CLASSE_VELOCIDADE'] = 'DESCONHECIDA'
-        
-        total = len(df_futuras)
-        baixa = (df_futuras['CLASSE_VELOCIDADE'] == 'BAIXA').sum()
-        alta = (df_futuras['CLASSE_VELOCIDADE'] == 'ALTA').sum()
-        giga = (df_futuras['CLASSE_VELOCIDADE'] == 'GIGA').sum()
-        desconhecida = (df_futuras['CLASSE_VELOCIDADE'] == 'DESCONHECIDA').sum()
-        
-        lista = []
-        for _, row in df_futuras.iterrows():
-            lista.append({
-                'sa': row.get('SA', 'N/A'),
-                'velocidade': row.get('VELOCIDADE', 'N/A'),
-                'classe': row['CLASSE_VELOCIDADE'],
-                'gpon': row.get('GPON', 'N/A'),
-                'endereco': formatar_endereco(row)
-            })
-        
-        return {'total': total, 'baixa': baixa, 'alta': alta, 'giga': giga, 'desconhecida': desconhecida, 'lista': lista}
-    except Exception as e:
-        logger.error(f"Erro: {e}", exc_info=True)
-        return {'erro': str(e)}
-
-def formatar_velocidades_futuras(analise: Dict[str, Any]) -> str:
-    if 'erro' in analise:
-        return f"❌ {analise['erro']}"
-    if analise['total'] == 0:
-        return "📭 Nenhuma atividade futura encontrada."
-    
-    msg = f"🚀 *VELOCIDADES - ATIVIDADES FUTURAS*\n\n"
-    msg += f"📊 *Total:* {analise['total']}\n"
-    msg += f"🐢 *Baixa (<600 Mbps):* {analise['baixa']}\n"
-    msg += f"⚡ *Alta (600-999 Mbps):* {analise['alta']}\n"
-    msg += f"🏆 *Giga (≥1000 Mbps):* {analise['giga']}\n"
-    msg += f"❓ *Desconhecida:* {analise['desconhecida']}\n\n"
-    
-    if analise['lista']:
-        msg += "📋 *Detalhamento:*\n"
-        for item in analise['lista'][:20]:
-            msg += f"🔹 SA: {item['sa']} - {item['velocidade']} Mbps ({item['classe']})\n"
-            msg += f"   GPON: {item['gpon']}\n"
-            msg += f"   📍 {item['endereco']}\n\n"
-        if len(analise['lista']) > 20:
-            msg += f"... e mais {len(analise['lista']) - 20} atividades.\n"
-    return msg
-
-# =============================================================================
-# DETALHAMENTOS (mantidos)
-# =============================================================================
-
-async def repetidos_detalhado_core(message, context):
-    """Exibe cadeias completas de repetição onde o técnico logado foi o PAI (primeiro reparo)
-       e o segundo reparo (primeira reincidência) ocorreu no MÊS ATUAL.
-       Apenas reparos CONCLUÍDO COM SUCESSO são considerados."""
-    mat = context.user_data.get('matricula_usada')
-    if not mat:
-        tecnico = context.user_data.get('tecnico')
-        mat = extrair_codigo_do_tecnico(tecnico) or ''
-    if not mat:
-        await message.reply_text("❌ Matrícula não encontrada.")
-        return
-
-    df = carregar_base()
-    if df is None or df.empty:
-        await message.reply_text("❌ Base não carregada.")
-        return
-
-    try:
-        hoje = datetime.now()
-        primeiro_dia_mes = datetime(hoje.year, hoje.month, 1)
-        if hoje.month == 12:
-            ultimo_dia_mes = datetime(hoje.year + 1, 1, 1) - timedelta(days=1)
-        else:
-            ultimo_dia_mes = datetime(hoje.year, hoje.month + 1, 1) - timedelta(days=1)
-
-        df = df.copy()
-        if "UF" in df.columns:
-            df = df[df["UF"].astype(str).str.strip().str.upper() == "SC"]
-
-        # Filtrar reparos (apenas CONCLUÍDO COM SUCESSO)
-        df_rep = df[
-            (df["MACRO"].astype(str).str.strip().str.upper() == "REP-FTTH") &
-            (df["ESTADO"].astype(str).str.strip().str.upper() == "CONCLUÍDO COM SUCESSO") &
-            df["AB_DT"].notna()
-        ].copy()
-
-        if df_rep.empty:
-            await message.reply_text("📭 Nenhum reparo encontrado.")
-            return
-
-        df_rep = df_rep.sort_values(["GPON", "AB_DT"]).reset_index(drop=True)
-
-        cadeias = []
-        for gpon, grupo in df_rep.groupby("GPON"):
-            if len(grupo) < 2:
-                continue
-            grupo = grupo.reset_index(drop=True)
-            i = 0
-            while i < len(grupo) - 1:
-                cadeia_atual = [grupo.iloc[i]]
-                j = i + 1
-                while j < len(grupo) and (grupo.iloc[j]["AB_DT"] - grupo.iloc[j-1]["AB_DT"]).days <= 30:
-                    cadeia_atual.append(grupo.iloc[j])
-                    j += 1
-                if len(cadeia_atual) >= 2:
-                    # Verificar se o SEGUNDO reparo (índice 1) está no mês atual
-                    segundo_rep = cadeia_atual[1]
-                    if primeiro_dia_mes <= segundo_rep["AB_DT"] <= ultimo_dia_mes:
-                        cadeias.append(cadeia_atual)
-                i = j
-
-        if not cadeias:
-            await message.reply_text("📭 Nenhuma cadeia de repetição com segundo reparo neste mês.")
-            return
-
-        # Filtrar cadeias onde o técnico do primeiro reparo (PAI) é o usuário
-        cadeias_do_tecnico = []
-        for cadeia in cadeias:
-            primeiro = cadeia[0]
-            tr_primeiro = str(primeiro.get('TR', '')).strip().upper()
-            tec_primeiro = str(primeiro.get('TECNICO_EXECUTOR', '')).strip().upper()
-            if tr_primeiro == mat.upper() or mat.upper() in tec_primeiro:
-                cadeias_do_tecnico.append(cadeia)
-
-        if not cadeias_do_tecnico:
-            await message.reply_text("📭 Você não foi o técnico PAI em nenhuma cadeia de repetição com segundo reparo neste mês.")
-            return
-
-        # Exibir cada cadeia
-        for cadeia in cadeias_do_tecnico:
-            primeiro = cadeia[0]
-            endereco = formatar_endereco(primeiro)
-            if endereco == 'Endereço não disponível':
-                endereco = f"GPON: {primeiro.get('GPON', 'N/A')}"
-
-            msg = f"🔄 *REPAROS REPETIDOS DETALHADOS (MÊS ATUAL)*\n\n"
-            msg += f"📍 *Endereço:* {endereco}\n"
-            msg += f"🔁 *Total de reincidências (≤30 dias):* {len(cadeia) - 1}\n\n"
-
-            for idx, reparo in enumerate(cadeia, 1):
-                data_ab = reparo.get("AB_DT")
-                data_str = data_ab.strftime('%d/%m/%Y %H:%M') if pd.notna(data_ab) else 'N/A'
-                tecnico = reparo.get("TECNICO_EXECUTOR") or reparo.get("TR", "N/A")
-                sa = reparo.get("SA", "")
-                if pd.isna(sa) or str(sa).strip() == "":
-                    sa = "NULL"
-                else:
-                    sa = str(sa).strip()
-                gpon = reparo.get("GPON", "N/A")
-                cod_enc = reparo.get("COD_FECHAMENTO", "N/A")
-                desc = reparo.get("DESCRICAO", "")
-                if desc and len(str(desc)) > 80:
-                    desc = str(desc)[:77] + "..."
-                estado = reparo.get("ESTADO", "N/A")
-
-                if idx == 1:
-                    msg += f"🔹 *1º Reparo (PAI)*\n"
-                else:
-                    dias = (reparo["AB_DT"] - cadeia[idx-2]["AB_DT"]).days if idx > 1 else 0
-                    msg += f"🔸 *{idx}º Reparo (após {dias} dias)*\n"
-                msg += f"   SA: {sa}\n"
-                msg += f"   📡 GPON: {gpon}\n"
-                msg += f"   👤 Técnico: {tecnico}\n"
-                msg += f"   📅 Abertura: {data_str}\n"
-                msg += f"   🏷️ Estado: {estado}\n"
-                if cod_enc and str(cod_enc) != "N/A" and str(cod_enc).strip() != "":
-                    msg += f"   🔢 Cód. Encerramento: {cod_enc}\n"
-                if desc and desc != "nan":
-                    msg += f"   📝 Descrição: {desc}\n"
-                msg += "\n"
-
-            msg += "─" * 30 + "\n\n"
-
-            if len(msg) > 4000:
-                partes = [msg[i:i+3900] for i in range(0, len(msg), 3900)]
-                for parte in partes:
-                    await message.reply_text(parte, parse_mode="Markdown")
-            else:
-                await message.reply_text(msg, parse_mode="Markdown")
-
-    except Exception as e:
-        logger.error(f"Erro repetidos_detalhado_core: {e}", exc_info=True)
-        await message.reply_text(f"❌ Erro ao processar: {str(e)}")
-
-
-async def infancia_detalhado_core(message, context):
-    """Exibe instalações com infância onde o técnico foi o instalador (PAI)
-       e o primeiro reparo filho ocorreu no MÊS ATUAL e foi CONCLUÍDO COM SUCESSO."""
-    mat = context.user_data.get('matricula_usada')
-    if not mat:
-        tecnico = context.user_data.get('tecnico')
-        mat = extrair_codigo_do_tecnico(tecnico) or ''
-    if not mat:
-        await message.reply_text("❌ Matrícula não encontrada.")
-        return
-
-    df = carregar_base()
-    if df is None or df.empty:
-        await message.reply_text("❌ Base não carregada.")
-        return
-
-    try:
-        hoje = datetime.now()
-        primeiro_dia_mes = datetime(hoje.year, hoje.month, 1)
-        if hoje.month == 12:
-            ultimo_dia_mes = datetime(hoje.year + 1, 1, 1) - timedelta(days=1)
-        else:
-            ultimo_dia_mes = datetime(hoje.year, hoje.month + 1, 1) - timedelta(days=1)
-
-        df = df.copy()
-        if "UF" in df.columns:
-            df = df[df["UF"].astype(str).str.strip().str.upper() == "SC"]
-
-        # Instalações do técnico (apenas concluídas com sucesso)
-        mask_tec = pd.Series(False, index=df.index)
-        if 'TR' in df.columns:
-            mask_tec |= df['TR'].astype(str).str.strip().str.upper() == mat.upper()
-        if 'TECNICO_EXECUTOR' in df.columns:
-            mask_tec |= df['TECNICO_EXECUTOR'].astype(str).str.upper().str.contains(mat.upper(), na=False)
-
-        inst = df[
-            mask_tec &
-            (df["MACRO"].astype(str).str.strip().str.upper() == "INST-FTTH") &
-            (df["ESTADO"].astype(str).str.strip().str.upper() == "CONCLUÍDO COM SUCESSO") &
-            df["FIM_DT"].notna()
-        ].copy()
-
-        if inst.empty:
-            await message.reply_text("📭 Nenhuma instalação sua encontrada.")
-            return
-
-        # Reparos que podem ser filhos (apenas concluídos com sucesso)
-        rep = df[
-            (df["MACRO"].astype(str).str.strip().str.upper() == "REP-FTTH") &
-            (df["ESTADO"].astype(str).str.strip().str.upper() == "CONCLUÍDO COM SUCESSO") &
-            df["AB_DT"].notna()
-        ].copy()
-
-        if rep.empty:
-            await message.reply_text("📭 Nenhum reparo filho encontrado.")
-            return
-
-        resultados = []
-        for _, pai in inst.iterrows():
-            gpon = pai.get("GPON")
-            if pd.isna(gpon):
-                continue
-            data_inst = pai.get("FIM_DT")
-            if pd.isna(data_inst):
-                continue
-            limite = data_inst + timedelta(days=30)
-            filhos = rep[
-                (rep["GPON"] == gpon) &
-                (rep["AB_DT"] > data_inst) &
-                (rep["AB_DT"] <= limite)
-            ].sort_values("AB_DT")
-            if not filhos.empty:
-                # Verificar se o primeiro filho está no mês atual
-                primeiro_filho = filhos.iloc[0]
-                if primeiro_dia_mes <= primeiro_filho["AB_DT"] <= ultimo_dia_mes:
-                    resultados.append((pai, filhos))
-
-        if not resultados:
-            await message.reply_text("📭 Nenhuma infância com primeiro reparo neste mês.")
-            return
-
-        for pai, filhos in resultados:
-            endereco = formatar_endereco(pai)
-            if endereco == 'Endereço não disponível':
-                endereco = f"GPON: {pai.get('GPON', 'N/A')}"
-
-            msg = f"👶 *INFÂNCIA DETALHADA (MÊS ATUAL)*\n\n"
-            msg += f"📍 *Endereço:* {endereco}\n"
-            msg += f"📦 *Total de reparos em até 30 dias:* {len(filhos)}\n\n"
-
-            data_inst = pai.get("FIM_DT")
-            data_str = data_inst.strftime('%d/%m/%Y %H:%M') if pd.notna(data_inst) else 'N/A'
-            msg += f"🔹 *Instalação (PAI)*\n"
-            msg += f"   SA: {pai.get('SA', 'N/A')}\n"
-            msg += f"   📡 GPON: {pai.get('GPON', 'N/A')}\n"
-            msg += f"   👤 Técnico: {pai.get('TECNICO_EXECUTOR', pai.get('TR', 'N/A'))}\n"
-            msg += f"   📅 {data_str}\n"
-            if pd.notna(pai.get("COD_FECHAMENTO")):
-                msg += f"   🔢 Cód. Encerramento: {pai.get('COD_FECHAMENTO')}\n"
-            if pd.notna(pai.get("DESCRICAO")):
-                desc = str(pai.get("DESCRICAO"))[:80]
-                msg += f"   📝 Descrição: {desc}\n"
-            msg += "\n"
-
-            for i, (_, filho) in enumerate(filhos.iterrows(), 1):
-                data_ab = filho.get("AB_DT")
-                data_str = data_ab.strftime('%d/%m/%Y %H:%M') if pd.notna(data_ab) else 'N/A'
-                dias = (filho["AB_DT"] - pai["FIM_DT"]).days
-                msg += f"🔸 *Reparo filho {i} (após {dias} dias)*\n"
-                msg += f"   SA: {filho.get('SA', 'N/A')}\n"
-                msg += f"   📡 GPON: {filho.get('GPON', 'N/A')}\n"
-                msg += f"   👤 Técnico: {filho.get('TECNICO_EXECUTOR', filho.get('TR', 'N/A'))}\n"
-                msg += f"   📅 Abertura: {data_str}\n"
-                if pd.notna(filho.get("COD_FECHAMENTO")):
-                    msg += f"   🔢 Cód. Encerramento: {filho.get('COD_FECHAMENTO')}\n"
-                if pd.notna(filho.get("DESCRICAO")):
-                    desc = str(filho.get("DESCRICAO"))[:80]
-                    msg += f"   📝 Descrição: {desc}\n"
-                msg += "\n"
-
-            msg += "─" * 30 + "\n\n"
-
-            if len(msg) > 4000:
-                partes = [msg[i:i+3900] for i in range(0, len(msg), 3900)]
-                for parte in partes:
-                    await message.reply_text(parte, parse_mode="Markdown")
-            else:
-                await message.reply_text(msg, parse_mode="Markdown")
-
-    except Exception as e:
-        logger.error(f"Erro infancia_detalhado_core: {e}", exc_info=True)
-        await message.reply_text(f"❌ Erro ao processar: {str(e)}")
-
-# =============================================================================
-# HANDLERS DE COMANDOS (mantidos com adição do supervisor)
-# =============================================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    
-    if verificar_autenticacao(user_id, context) or verificar_supervisor_autenticado(user_id, context):
-        nome = context.user_data.get('nome_supervisor') or extrair_nome_tecnico(context.user_data.get('tecnico')) or user.first_name
-        await update.message.reply_text(f"👋 Olá {nome}, você já está autenticado!\n\nUse /menu para começar.")
-        return
-    
-    await update.message.reply_text(
-        f"👋 Olá {user.first_name}! Bem-vindo.\n\n"
-        f"🔐 Digite sua matrícula (ex: TR818218, TT123456 ou TC004017):"
-    )
-    context.user_data['aguardando_matricula'] = True
-
-async def supervisor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ativa o modo supervisor"""
-    user_id = update.effective_user.id
-    
-    if verificar_supervisor_autenticado(user_id, context):
-        dados = context.user_data
-        await update.message.reply_text(
-            f"👑 Modo supervisor ativo.\n"
-            f"Equipe: {len(dados.get('tecnicos', []))} técnicos.\n"
-            f"Use /menu para ver as opções."
-        )
-        return
-    
-    if not context.args:
-        await update.message.reply_text("❌ Use: /supervisor SEU_PRIMEIRO_NOME\nEx: /supervisor DANIEL")
-        return
-    
-    nome = " ".join(context.args).strip()
-    dados = get_dados_equipe_supervisor(nome)
-    
-    if dados['tecnicos']:
-        context.user_data['modo_supervisor'] = True
-        context.user_data['nome_supervisor'] = nome
-        context.user_data['tecnicos'] = dados['tecnicos']
-        context.user_data['nomes_tecnicos'] = dados['nomes_tecnicos']
-        context.user_data['setores'] = dados['setores']
-        context.user_data['mapa_tecnicos'] = dados['mapa_tecnicos']
-        await update.message.reply_text(
-            f"👑 Modo supervisor ativado para {nome}.\n"
-            f"Equipe: {len(dados['tecnicos'])} técnicos.\n"
-            f"Setores: {', '.join(dados['setores'][:3])}...\n\n"
-            f"Use /menu para ver as opções."
-        )
-    else:
-        await update.message.reply_text(
-            f"⚠️ Supervisor '{nome}' não encontrado na base de presença.\n"
-            f"Verifique o nome e tente novamente."
-        )
-
-def get_dados_equipe_supervisor(nome_supervisor: str) -> Dict[str, Any]:
-    """Busca os técnicos da equipe de um supervisor na planilha de presença"""
-    if nome_supervisor in _supervisores_cache:
-        return _supervisores_cache[nome_supervisor]
-    
-    df = carregar_presenca()
-    if df is None:
-        logger.error("❌ Base de presença não carregada")
-        return {'setores': [], 'tecnicos': [], 'nomes_tecnicos': [], 'mapa_tecnicos': {}}
-    
-    df.columns = [remover_acentos(str(col)).strip().upper() for col in df.columns]
-    
-    col_sup = next((c for c in df.columns if any(x in c for x in ['SUPERVISOR', 'SUP', 'LIDER'])), None)
-    col_setor = next((c for c in df.columns if 'SETOR' in c), None)
-    col_func = next((c for c in df.columns if 'FUNCIONARIO' in c or 'NOME' in c), None)
-    col_tr = next((c for c in df.columns if c == 'TR'), None)
-    col_tt = next((c for c in df.columns if c == 'TT'), None)
-    col_tc = next((c for c in df.columns if c == 'TC'), None)
-    
-    if not col_sup:
-        logger.error("❌ Coluna SUPERVISOR não encontrada")
-        return {'setores': [], 'tecnicos': [], 'nomes_tecnicos': [], 'mapa_tecnicos': {}}
-    
-    nome_busca = remover_acentos(nome_supervisor).upper().strip()
-    setores, tecnicos, nomes, mapa = set(), [], [], {}
-    
-    for _, row in df.iterrows():
-        sup_val = str(row.get(col_sup, '')).strip()
-        if not sup_val:
-            continue
-        sup_normalizado = remover_acentos(sup_val).upper()
-        if any(parte in sup_normalizado for parte in nome_busca.split()):
-            if col_setor:
-                setor = str(row.get(col_setor, '')).strip()
-                if setor:
-                    setores.add(setor)
-            codigo = None
-            if col_tc and pd.notna(row.get(col_tc)):
-                codigo = str(row[col_tc]).strip()
-            elif col_tr and pd.notna(row.get(col_tr)):
-                codigo = str(row[col_tr]).strip()
-            elif col_tt and pd.notna(row.get(col_tt)):
-                codigo = str(row[col_tt]).strip()
-            nome_tec = ''
-            if col_func and pd.notna(row.get(col_func)):
-                nome_tec = str(row[col_func]).strip()
-            if codigo:
-                if codigo not in tecnicos:
-                    tecnicos.append(codigo)
-                if nome_tec and codigo not in mapa:
-                    mapa[codigo] = nome_tec
-            if nome_tec and nome_tec not in nomes:
-                nomes.append(nome_tec)
-    
-    resultado = {
-        'setores': list(setores),
-        'tecnicos': tecnicos,
-        'nomes_tecnicos': nomes,
-        'mapa_tecnicos': mapa
-    }
-    
-    logger.info(f"📊 Supervisor {nome_supervisor}: {len(tecnicos)} técnicos encontrados")
-    _supervisores_cache[nome_supervisor] = resultado
-    return resultado
-
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if not verificar_autenticacao(user_id, context) and not verificar_supervisor_autenticado(user_id, context):
-        await update.message.reply_text("❌ Você não está autenticado. Use /start primeiro.")
-        return
-    
-    is_supervisor = verificar_supervisor_autenticado(user_id, context)
-    
-    if is_supervisor:
-        teclado = [
-            [InlineKeyboardButton("📊 Repetidos Equipe", callback_data="sup_repetidos"),
-             InlineKeyboardButton("👶 Infância Equipe", callback_data="sup_inf")],
-            [InlineKeyboardButton("📋 Atividades Equipe", callback_data="sup_atividades")],
-            [InlineKeyboardButton("📅 Presença", callback_data="cmd_presenca")],
-            [InlineKeyboardButton("⚙️ Operações", callback_data="menu_operacoes")],
-            [InlineKeyboardButton("🆘 Ajuda", callback_data="cmd_ajuda")]
-        ]
-        titulo = "👑 *BERTA • Central do Supervisor*"
-    else:
-        teclado = [
-            [InlineKeyboardButton("📋 Consultas", callback_data="menu_consultas")],
-            [InlineKeyboardButton("📊 Indicadores", callback_data="menu_indicadores")],
-            [InlineKeyboardButton("🔍 Detalhamentos", callback_data="menu_detalhes")],
-            [InlineKeyboardButton("⚙️ Operações", callback_data="menu_operacoes")],
-            [InlineKeyboardButton("📅 Presença", callback_data="cmd_presenca")],
-            [InlineKeyboardButton("🆘 Ajuda", callback_data="cmd_ajuda")]
-        ]
-        titulo = "🤖 *BERTA • Central do Técnico*"
-    
-    await update.message.reply_text(
-        f"{titulo}\n\nEscolha uma categoria:",
-        reply_markup=InlineKeyboardMarkup(teclado),
-        parse_mode="Markdown"
-    )
-
-async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    is_sup = verificar_supervisor_autenticado(user_id, context)
-    
-    if not is_sup and not verificar_autenticacao(user_id, context):
-        await update.message.reply_text("❌ Não autenticado. Use /start.")
-        return
-    
-    if is_sup:
-        texto = """
-👑 *BERTA • Supervisor*
-
-📊 *Equipe*
-• /sup_ativ - Atividades da equipe
-• /sup_rep - Repetidos da equipe
-• /sup_inf - Infância da equipe
-
-📅 *Presença*
-• /presenca - Resumo do mês
-
-⚙️ *Operações*
-• /pendencia - Abrir pendência
-• /reversa - Gerar PDF de reversa
-• /mascaras - Máscaras
-
-🆘 *Sistema*
-• /menu - Menu interativo
-• /sair - Encerrar sessão
-• /cache - Limpar cache
-"""
-    else:
-        texto = """
-🤖 *BERTA • Comandos Disponíveis*
-
-📋 *Consultas*
-• /minhas - Atividades futuras
-• /encerradas - Últimos 30 dias
-• /nao_atribuidas - Atividades não atribuídas
-• /alarmados - Atividades alarmadas
-
-📊 *Indicadores*
-• /repetidos - Taxa de repetição
-• /infancia - Taxa de infância
-• /p0 - Performance operacional
-• /velocidades - Velocidades das atividades futuras
-
-🔍 *Detalhamentos*
-• /repetidos_detalhado - Cadeias onde você é o PAI (mês atual)
-• /infancia_detalhado - Instalações que geraram infância (mês atual)
-
-⚙️ *Operações*
-• /pendencia - Abrir pendência com fotos
-• /reversa - Gerar PDF de reversa
-• /mascaras - Registrar cancelamento/reagendamento
-
-📅 *Presença*
-• /presenca - Resumo do mês
-
-🆘 *Sistema*
-• /menu - Menu interativo
-• /sair - Encerrar sessão
-• /cache - Limpar cache
-"""
-    await update.message.reply_text(texto, parse_mode="Markdown")
-
-async def sair(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("👋 Sessão encerrada.")
-
-async def cache_limpar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    limpar_cache()
-    await update.message.reply_text("✅ Cache limpo.")
-
-async def minhas_atividades_core(message, context, ver_todas=False):
-    mat = context.user_data.get('matricula_usada')
-    nome = extrair_nome_tecnico(context.user_data.get('tecnico'))
-    if not mat:
-        await message.reply_text("❌ Matrícula não encontrada.")
-        return
-    
-    df = get_atividades_por_tecnico(codigo_tecnico=mat, nome_tecnico=nome, tipo='futuras')
-    if df is None or df.empty:
-        await message.reply_text("📭 Nenhuma atividade futura.")
-        return
-    
-    titulo = "TODAS Atividades Futuras" if ver_todas else "Atividades Futuras"
-    msg = formatar_atividades(df, titulo, ver_todas=ver_todas)
-    
-    if len(msg) > 4000:
-        for i in range(0, len(msg), 4000):
-            await message.reply_text(msg[i:i+4000])
-    else:
-        await message.reply_text(msg)
-
-async def minhas_encerradas_core(message, context):
-    mat = context.user_data.get('matricula_usada')
-    nome = extrair_nome_tecnico(context.user_data.get('tecnico'))
-    if not mat:
-        await message.reply_text("❌ Matrícula não encontrada.")
-        return
-    
-    df = get_atividades_por_tecnico(codigo_tecnico=mat, nome_tecnico=nome, tipo='encerradas')
-    if df is None or df.empty:
-        await message.reply_text("📭 Nenhuma atividade encerrada nos últimos 30 dias.")
-        return
-    
-    msg = formatar_atividades(df, "Atividades Encerradas (30 dias)")
-    await message.reply_text(msg)
-
-async def nao_atribuidas_core(message, context):
-    tecnico = context.user_data.get('tecnico')
-    setor = tecnico.get('setor_atual', '')
-    df = get_atividades_nao_atribuidas(setor=setor)
-    if df is None or df.empty:
-        await message.reply_text("📭 Nenhuma atividade não atribuída no seu setor.")
-        return
-    msg = formatar_atividades(df, "Atividades Não Atribuídas")
-    await message.reply_text(msg)
-
-async def alarmados_core(message, context):
-    mat = context.user_data.get('matricula_usada')
-    nome = extrair_nome_tecnico(context.user_data.get('tecnico'))
-    if not mat:
-        await message.reply_text("❌ Matrícula não encontrada.")
-        return
-    
-    await message.reply_text("🔍 Buscando atividades alarmadas...")
-    df = get_alarmados_por_tecnico(codigo_tecnico=mat, nome_tecnico=nome)
-    if df is None or df.empty:
-        await message.reply_text("✅ Nenhuma atividade alarmada encontrada.")
-        return
-    
-    msg = "🚨 *ATIVIDADES ALARMADAS*\n\n"
-    for _, row in df.head(20).iterrows():
-        msg += f"🔹 SA: {row.get('SA', 'N/A')}\n"
-        if 'MACRO' in row:
-            msg += f"   Tipo: {row['MACRO']}\n"
-        if 'GPON' in row and pd.notna(row['GPON']):
-            msg += f"   GPON: {row['GPON']}\n"
-        msg += f"   🚨 Alarmado: SIM\n"
-        end = formatar_endereco(row)
-        if end != 'Endereço não disponível':
-            msg += f"   📍 {end}\n"
-        msg += f"   Status: {row.get('ESTADO', 'N/A')}\n\n"
-        if len(msg) > 3800:
-            break
-    
-    await message.reply_text(msg, parse_mode="Markdown")
-
-async def repetidos_core(message, context):
-    mat = context.user_data.get('matricula_usada')
-    if not mat:
-        tecnico = context.user_data.get('tecnico')
-        mat = extrair_codigo_do_tecnico(tecnico) or ''
-    
-    if not mat:
-        await message.reply_text("❌ Matrícula não encontrada.")
-        return
-    
-    df = carregar_base()
-    if df is None:
-        await message.reply_text("❌ Base não carregada.")
-        return
-    
-    hoje = datetime.now()
-    ind = contar_reparos_repetidos_por_tecnico(df, mat, hoje.month, hoje.year)
-    
-    if 'erro' in ind:
-        await message.reply_text(f"❌ {ind['erro']}")
-        return
-    
-    fonte_label = "🏛️ Fonte: VIP Oficial" if ind.get('fonte') == 'VIP' else "⚙️ Fonte: Cálculo Interno"
-    msg = (
-        f"📊 *Taxa de Repetição - {ind['periodo']}*\n\n"
-        f"🔧 Total reparos: {ind['total_reparos']}\n"
-        f"🔄 Reparos repetidos: {ind['reparos_repetidos']}\n"
-        f"📈 Taxa: {ind['taxa']}%\n\n"
-        f"{fonte_label}"
-    )
-    await message.reply_text(msg, parse_mode="Markdown")
-
-async def infancia_core(message, context):
-    mat = context.user_data.get('matricula_usada')
-    if not mat:
-        tecnico = context.user_data.get('tecnico')
-        mat = extrair_codigo_do_tecnico(tecnico) or ''
-    
-    if not mat:
-        await message.reply_text("❌ Matrícula não encontrada.")
-        return
-    
-    hoje = datetime.now()
-    ind = calcular_infancia_por_tecnico(codigo_tecnico=mat, mes_ref=hoje.month, ano_ref=hoje.year)
-    
-    if 'erro' in ind:
-        await message.reply_text(f"❌ {ind['erro']}")
-        return
-    
-    fonte_label = "🏛️ Fonte: VIP Oficial" if ind.get('fonte') == 'VIP' else "⚙️ Fonte: Cálculo Interno"
-    msg = (
-        f"📊 *Taxa de Infância - {ind['periodo']}*\n\n"
-        f"📦 Total instalações: {ind['total_instalacoes']}\n"
-        f"👶 Com infância: {ind['instalacoes_infancia']}\n"
-        f"📉 Taxa: {ind['taxa_infancia']}%\n\n"
-        f"{fonte_label}"
-    )
-    await message.reply_text(msg, parse_mode="Markdown")
-
-async def p0_core(message, context):
-    mat = context.user_data.get('matricula_usada')
-    if not mat:
-        tecnico = context.user_data.get('tecnico')
-        mat = extrair_codigo_do_tecnico(tecnico) or ''
-    
-    if not mat:
-        await message.reply_text("❌ Matrícula não encontrada.")
-        return
-    
-    ind = calcular_p0_por_tecnico(mat)
-    if 'erro' in ind:
-        await message.reply_text(f"❌ {ind['erro']}")
-        return
-    
-    hoje = datetime.now()
-    meses_pt = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-                'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
-    periodo = f"{meses_pt[hoje.month-1]}/{hoje.year}"
-    
-    msg = (
-        f"📊 *P0 - Performance Operacional*\n\n"
-        f"📅 Período: {periodo}\n\n"
-        f"⏰ *P0 10H:* {ind['p0_10']}\n"
-        f"🌇 *P0 15H:* {ind['p0_15']}\n"
-        f"📆 Total de dias: {ind['total_dias']}\n\n"
-        f"💡 *Regras:*\n"
-        f"• P0 10H: primeiro encerramento do dia *após* 10:00\n"
-        f"• P0 15H: primeiro encerramento da tarde *após* 15:00"
-    )
-    await message.reply_text(msg, parse_mode="Markdown")
-
-async def velocidades_core(message, context):
-    mat = context.user_data.get('matricula_usada')
-    nome = extrair_nome_tecnico(context.user_data.get('tecnico', {}))
-    if not mat:
-        await message.reply_text("❌ Matrícula não encontrada.")
-        return
-    
-    ana = analisar_velocidades_futuras_por_tecnico(mat, nome)
-    if 'erro' in ana:
-        await message.reply_text(f"❌ {ana['erro']}")
-        return
-    
-    msg = formatar_velocidades_futuras(ana)
-    await message.reply_text(msg, parse_mode="Markdown")
-
-async def presenca_core(message, context):
-    mat = context.user_data.get('matricula_usada')
-    
-    df = carregar_base()
-    if df is None:
-        await message.reply_text("❌ Base não carregada.")
-        return
-    
-    hoje = datetime.now()
-    primeiro_dia = datetime(hoje.year, hoje.month, 1)
-    
-    mask_tec = pd.Series(False, index=df.index)
-    if mat and 'TR' in df.columns:
-        mask_tec |= df['TR'].astype(str).str.strip().str.upper() == mat.upper()
-    
-    df_tec = df[mask_tec & (df['DH_FIM_EXEC_REAL'].notna()) & (df['DH_FIM_EXEC_REAL'] >= primeiro_dia)]
-    
-    if df_tec.empty:
-        await message.reply_text("📭 Nenhuma atividade concluída neste mês.")
-        return
-    
-    dias_trabalhados = df_tec['DH_FIM_EXEC_REAL'].dt.date.nunique()
-    total_atividades = len(df_tec)
-    media = round(total_atividades / dias_trabalhados, 1) if dias_trabalhados > 0 else 0
-    
-    meses_pt = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-                'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
-    
-    msg = (
-        f"📅 *Presença — {meses_pt[hoje.month-1]}/{hoje.year}*\n\n"
-        f"📊 Dias trabalhados: {dias_trabalhados}\n"
-        f"🔧 Atividades concluídas: {total_atividades}\n"
-        f"📈 Média diária: {media} ativ/dia"
-    )
-    await message.reply_text(msg, parse_mode="Markdown")
-
-# =============================================================================
-# SALVAR PENDÊNCIA NA PLANILHA (NOVA FUNÇÃO)
-# =============================================================================
-
-async def salvar_pendencia_planilha(dados: dict):
-    """Envia os dados da pendência para o Google Sheets via Web App."""
-    try:
-        response = requests.post(URL_SALVAR_PENDENCIA, json=dados, timeout=10)
-        if response.status_code == 200 and response.json().get("status") == "ok":
-            logger.info("✅ Pendência salva na planilha com sucesso")
-        else:
-            logger.error(f"❌ Erro ao salvar na planilha: {response.text}")
-    except Exception as e:
-        logger.error(f"❌ Falha ao enviar para planilha: {e}")
-
-# =============================================================================
-# PENDÊNCIA (CONVERSATION HANDLER) — ATUALIZADO COM PLANILHA
-# =============================================================================
-
-(ESTADO_FOTOS, ESTADO_TIPO, ESTADO_SUBCAUSA, ESTADO_OBS) = range(4)
-
-async def pendencia_iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not verificar_autenticacao(user_id, context) and not verificar_supervisor_autenticado(user_id, context):
-        await update.message.reply_text("❌ Você não está autenticado. Use /start primeiro.")
-        return ConversationHandler.END
-    
-    context.user_data.pop('pendencia_fotos', None)
-    context.user_data.pop('aguardando_sa_manual', None)
-    context.user_data['pendencia_fotos'] = []
-    await update.message.reply_text(
-        "📸 Envie uma ou mais fotos do print da atividade.\n"
-        "Após enviar todas, digite /continuar para prosseguir."
-    )
-    return ESTADO_FOTOS
-
-async def pendencia_receber_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'pendencia_fotos' not in context.user_data:
-        context.user_data['pendencia_fotos'] = []
-    
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    temp_dir = tempfile.gettempdir()
-    file_path = os.path.join(temp_dir, f"pend_{update.effective_user.id}_{len(context.user_data['pendencia_fotos'])}.jpg")
-    await file.download_to_drive(file_path)
-    context.user_data['pendencia_fotos'].append(file_path)
-    await update.message.reply_text(f"📸 Foto {len(context.user_data['pendencia_fotos'])} recebida. Envie mais ou /continuar.")
-    return ESTADO_FOTOS
-
-async def pendencia_continuar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    fotos = context.user_data.get('pendencia_fotos', [])
-    if not fotos:
-        await update.message.reply_text("❌ Nenhuma foto enviada. Use /pendencia para começar.")
-        return ConversationHandler.END
-    
-    await update.message.reply_text("🔍 Processando a primeira imagem...")
-    ocr = extrair_dados_padrao(fotos[0]) if OCR_DISPONIVEL else {"sa": None}
-    context.user_data['pendencia_ocr'] = ocr
-    sa = ocr.get("sa")
-    if not sa:
-        await update.message.reply_text("❌ SA não identificado. Digite o número do SA manualmente (ex: SA-31137505 ou 31137505):")
-        context.user_data['aguardando_sa_manual'] = True
-        return ESTADO_FOTOS
-    
-    dados_base = get_dados_por_sa(sa)
-    if not dados_base:
-        await update.message.reply_text(f"❌ SA {sa} não encontrado na base. Digite o SA manualmente:")
-        context.user_data['aguardando_sa_manual'] = True
-        return ESTADO_FOTOS
-    
-    context.user_data['pendencia_dados_base'] = dados_base
-    context.user_data['pendencia_sa'] = sa
-    await update.message.reply_text("📝 Informe o **Tipo de Pendência** (ex: LOCAL FECHADO, SEM CONTATO):", parse_mode='Markdown')
-    return ESTADO_TIPO
-
-async def pendencia_tipo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'tecnico' not in context.user_data and not verificar_supervisor_autenticado(update.effective_user.id, context):
-        await update.message.reply_text("❌ Sessão expirada. Use /start novamente.")
-        return ConversationHandler.END
-    tipo = update.message.text.strip()
-    context.user_data['pendencia_tipo'] = tipo
-    await update.message.reply_text("📝 Informe a **Sub-Causa** (ex: CLIENTE AUSENTE, REPASSE):", parse_mode='Markdown')
-    return ESTADO_SUBCAUSA
-
-async def pendencia_subcausa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'tecnico' not in context.user_data and not verificar_supervisor_autenticado(update.effective_user.id, context):
-        await update.message.reply_text("❌ Sessão expirada. Use /start novamente.")
-        return ConversationHandler.END
-    sub = update.message.text.strip()
-    context.user_data['pendencia_subcausa'] = sub
-    await update.message.reply_text("📝 **Observação** (opcional, digite - para pular):", parse_mode='Markdown')
-    return ESTADO_OBS
-
-# Esta função foi atualizada para incluir mais campos e salvar na planilha
-async def pendencia_obs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'tecnico' not in context.user_data and not verificar_supervisor_autenticado(update.effective_user.id, context):
-        await update.message.reply_text("❌ Sessão expirada. Use /start novamente.")
-        return ConversationHandler.END
-    obs = update.message.text.strip()
-    if obs == '-':
-        obs = ''
-    context.user_data['pendencia_obs'] = obs
-    
-    fotos = context.user_data.get('pendencia_fotos', [])
-    ocr = context.user_data.get('pendencia_ocr', {})
-    base = context.user_data.get('pendencia_dados_base', {})
-    tecnico = context.user_data.get('tecnico', {})
-    nome_tecnico = extrair_nome_tecnico(tecnico) or context.user_data.get('nome_supervisor', 'Técnico')
-    matricula = context.user_data.get('matricula_usada', 'N/A')
-    sa = context.user_data.get('pendencia_sa', 'N/A')
-    
-    # Coleta de informações ampliada
-    cliente = ocr.get('nome') or base.get('cliente', 'N/A')
-    contato = ocr.get('contato') or base.get('contato', 'N/A')
-    gpon = ocr.get('gpon') or base.get('gpon', '')
-    atividade = ocr.get('atividade') or base.get('atividade', '')
-    endereco = ocr.get('endereco') or base.get('endereco', '')
-    setor = tecnico.get('setor_atual', '') or context.user_data.get('setor_supervisor', '')
-    municipio = base.get('cidade', '') or ocr.get('cidade', '')
-    id_companhia = ocr.get('id_companhia', '') or base.get('id_companhia', '')
-    doc_associado = ocr.get('doc_associado', '') or base.get('doc_associado', '')
-    
-    tipo = context.user_data.get('pendencia_tipo', 'N/A')
-    sub = context.user_data.get('pendencia_subcausa', 'N/A')
-    obs_final = context.user_data.get('pendencia_obs', '-')
-    
-    # Monta a máscara completa
-    caption = f"""
-━━━━━━━━━━━━━━━━━━━━
-🚨 MASCARA PENDÊNCIA
-━━━━━━━━━━━━━━━━━━━━
-
-Nome Técnico: {nome_tecnico}
-Matricula: {matricula}
-Setor: {setor or 'N/A'}
-Município: {municipio or 'N/A'}
-ID Companhia: {id_companhia or 'N/A'}
-
-Tipo de Pendência: {tipo}
-Sub-Causa: {sub}
-Atividade: {atividade or 'N/A'}
-
-BA/SA: {sa}
-DOC ASSOCIADO: {doc_associado or 'N/A'}
-Gpon: {gpon or 'N/A'}
-Cliente: {cliente}
-Contato: {contato}
-Endereço: {endereco or 'N/A'}
-
-OBS: {obs_final}
-
-🚨 @DanielOliveiraGA verificar pendência
-━━━━━━━━━━━━━━━━━━━━
-"""
-    grupo_destino = GRUPO_PENDENCIAS_ID
-    try:
-        for i, fpath in enumerate(fotos):
-            with open(fpath, 'rb') as f:
-                if i == 0:
-                    await context.bot.send_photo(chat_id=grupo_destino, photo=f, caption=caption)
-                else:
-                    await context.bot.send_photo(chat_id=grupo_destino, photo=f)
-        await context.bot.send_message(chat_id=grupo_destino, text="=========================")
-    except Exception as e:
-        logger.error(f"Erro ao enviar pendência: {e}")
-        await update.message.reply_text("❌ Erro ao enviar pendência. Tente novamente.")
-        return ConversationHandler.END
-    
-    # Salvar na planilha
-    dados_planilha = {
-        "tecnico": nome_tecnico,
-        "matricula": matricula,
-        "setor": setor,
-        "municipio": municipio,
-        "id_companhia": id_companhia,
-        "tipo": tipo,
-        "subcausa": sub,
-        "atividade": atividade,
-        "sa": sa,
-        "doc_associado": doc_associado,
-        "gpon": gpon,
-        "cliente": cliente,
-        "contato": contato,
-        "endereco": endereco,
-        "obs": obs_final
-    }
-    await salvar_pendencia_planilha(dados_planilha)
-    
-    await update.message.reply_text("✅ Pendência enviada com sucesso e registrada na planilha!")
-    for fpath in fotos:
-        try:
-            os.remove(fpath)
-        except:
-            pass
-    return ConversationHandler.END
-
-async def pendencia_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    fotos = context.user_data.get('pendencia_fotos', [])
-    for fpath in fotos:
-        try:
-            os.remove(fpath)
-        except:
-            pass
-    await update.message.reply_text("❌ Processo cancelado.")
-    return ConversationHandler.END
-
-def extrair_dados_padrao(caminho: str) -> Dict[str, Optional[str]]:
-    if not OCR_DISPONIVEL:
-        return {"sa": None, "nome": None, "contato": None}
-    res = {"sa": None, "nome": None, "contato": None}
-    try:
-        img = Image.open(caminho)
-        w, h = img.size
-        area_sa = img.crop((0, 0, w, int(h * 0.18)))
-        txt_sa = pytesseract.image_to_string(area_sa, lang='por')
-        match = re.search(r'SA[-\s]?(\d+)', txt_sa, re.IGNORECASE)
-        if match:
-            res["sa"] = f"SA-{match.group(1)}"
-        area_nome = img.crop((0, int(h * 0.42), w, int(h * 0.74)))
-        txt_nome = pytesseract.image_to_string(area_nome, lang='por')
-        linhas = [l.strip() for l in txt_nome.split('\n') if l.strip()]
-        if linhas:
-            res["nome"] = linhas[0]
-        area_tel = img.crop((0, int(h * 0.70), w, int(h * 0.92)))
-        txt_tel = pytesseract.image_to_string(area_tel, lang='por')
-        mt = re.search(r'(55\d{10,13})|(\d{2}\s?\d{4,5}-?\d{4})|(\d{10,13})', txt_tel)
-        if mt:
-            res["contato"] = re.sub(r'\D', '', mt.group(0))
-    except Exception as e:
-        logger.error(f"Erro OCR: {e}")
-    return res
-
-def get_dados_por_sa(sa: str) -> Optional[Dict[str, Any]]:
-    df = carregar_base()
-    if df is None:
-        return None
-    sa = str(sa).strip().upper()
-    if not sa.startswith("SA-"):
-        sa = f"SA-{sa}"
-    df_sa = df[df['SA'].astype(str).str.strip().str.upper() == sa]
-    if df_sa.empty:
-        return None
-    row = df_sa.iloc[0]
     return {
-        'numero_sa': sa,
-        'atividade': row.get('MACRO', 'N/A'),
-        'gpon': row.get('GPON', 'N/A'),
-        'endereco': formatar_endereco(row),
-        'cliente': row.get('Cliente', 'N/A'),
-        'contato': row.get('Contato', 'N/A'),
+        "tela": tela, "mes": mes,
+        "supervisor": "" if sup == "— Todos —" else sup,
+        "tecs_sup": tecs_sup,
+        "territorios": terr,
+        "tecnicos": tec,
     }
 
-# =============================================================================
-# SUBMENUS
-# =============================================================================
 
-async def menu_consultas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    teclado = [
-        [InlineKeyboardButton("📋 Minhas Atividades", callback_data="cmd_minhas")],
-        [InlineKeyboardButton("✅ Minhas Encerradas", callback_data="cmd_encerradas")],
-        [InlineKeyboardButton("📌 Não Atribuídas", callback_data="cmd_nao_atribuidas")],
-        [InlineKeyboardButton("🚨 Alarmados", callback_data="cmd_alarmados")],
-        [InlineKeyboardButton("🔙 Voltar", callback_data="menu_principal")]
-    ]
-    await query.message.reply_text(
-        "📋 *CONSULTAS*\n\nEscolha uma opção:",
-        reply_markup=InlineKeyboardMarkup(teclado),
-        parse_mode="Markdown"
-    )
+def _filtrar(df, f):
+    r = df[df["MES_FIM"].astype(str) == f["mes"]].copy()
+    if f["tecs_sup"]:    r = r[r["CODIGO_TECNICO_EXTRAIDO"].isin(f["tecs_sup"])]
+    if f["territorios"]: r = r[r["Território de serviço: Nome"].isin(f["territorios"])]
+    if f["tecnicos"]:    r = r[r["CODIGO_TECNICO_EXTRAIDO"].isin(f["tecnicos"])]
+    return r
 
-async def menu_indicadores(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    teclado = [
-        [InlineKeyboardButton("📊 Repetidos", callback_data="cmd_repetidos")],
-        [InlineKeyboardButton("👶 Infância", callback_data="cmd_infancia")],
-        [InlineKeyboardButton("🚀 Velocidades", callback_data="cmd_velocidades")],
-        [InlineKeyboardButton("⏰ P0", callback_data="cmd_p0")],
-        [InlineKeyboardButton("🔙 Voltar", callback_data="menu_principal")]
-    ]
-    await query.message.reply_text(
-        "📊 *INDICADORES*\n\nEscolha uma opção:",
-        reply_markup=InlineKeyboardMarkup(teclado),
-        parse_mode="Markdown"
-    )
 
-async def menu_detalhes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    teclado = [
-        [InlineKeyboardButton("🔍 Repetidos Detalhado", callback_data="cmd_repetidos_detalhado")],
-        [InlineKeyboardButton("👶 Infância Detalhado", callback_data="cmd_infancia_detalhado")],
-        [InlineKeyboardButton("🔙 Voltar", callback_data="menu_principal")]
-    ]
-    await query.message.reply_text(
-        "🔍 *DETALHAMENTOS*\n\nEscolha uma opção:",
-        reply_markup=InlineKeyboardMarkup(teclado),
-        parse_mode="Markdown"
-    )
+def _escopo(df, f):
+    if f["tecs_sup"]:
+        return df[df["CODIGO_TECNICO_EXTRAIDO"].isin(f["tecs_sup"])].copy()
+    return df
 
-async def menu_operacoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    teclado = [
-        [InlineKeyboardButton("🛠️ Abrir Pendência", callback_data="cmd_pendencia")],
-        [InlineKeyboardButton("🔁 Reversa", callback_data="cmd_reversa")],
-        [InlineKeyboardButton("🔄 Máscaras", callback_data="cmd_mascaras")],
-        [InlineKeyboardButton("🔙 Voltar", callback_data="menu_principal")]
-    ]
-    await query.message.reply_text(
-        "⚙️ *OPERAÇÕES*\n\nEscolha uma opção:",
-        reply_markup=InlineKeyboardMarkup(teclado),
-        parse_mode="Markdown"
-    )
 
 # =============================================================================
-# CALLBACK HANDLER
+# 7. TELAS
 # =============================================================================
 
-async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    message = query.message
-    
-    if data == "menu_principal":
-        await menu(update, context)
-        return
-    elif data == "menu_consultas":
-        await menu_consultas(update, context)
-        return
-    elif data == "menu_indicadores":
-        await menu_indicadores(update, context)
-        return
-    elif data == "menu_detalhes":
-        await menu_detalhes(update, context)
-        return
-    elif data == "menu_operacoes":
-        await menu_operacoes(update, context)
-        return
-    
-    # Comandos diretos via callback
-    if data == "cmd_pendencia":
-        await pendencia_iniciar(update, context)
-        return
-    elif data == "cmd_reversa":
-        await reversa_core(message, context)
-        return
-    elif data == "cmd_mascaras":
-        await mascaras_core(message, context)
-        return
-    
-    comandos = {
-        "cmd_minhas": lambda: minhas_atividades_core(message, context, False),
-        "cmd_encerradas": lambda: minhas_encerradas_core(message, context),
-        "cmd_nao_atribuidas": lambda: nao_atribuidas_core(message, context),
-        "cmd_alarmados": lambda: alarmados_core(message, context),
-        "cmd_repetidos": lambda: repetidos_core(message, context),
-        "cmd_repetidos_detalhado": lambda: repetidos_detalhado_core(message, context),
-        "cmd_infancia": lambda: infancia_core(message, context),
-        "cmd_infancia_detalhado": lambda: infancia_detalhado_core(message, context),
-        "cmd_p0": lambda: p0_core(message, context),
-        "cmd_velocidades": lambda: velocidades_core(message, context),
-        "cmd_presenca": lambda: presenca_core(message, context),
-        "cmd_ajuda": lambda: ajuda(update, context),
-    }
-    
-    if data in comandos:
-        await comandos[data]()
-    elif data.startswith("sup_"):
-        await message.reply_text("⚠️ Comando supervisor em desenvolvimento.")
-    elif data.startswith("cmd_"):
-        await message.reply_text(f"⚠️ Comando {data} em desenvolvimento.")
+def tela_producao(dm, ds, f):
+    _header("📊", "Producao Diaria", f)
+
+    suc  = dm[dm["FLAG_CONCLUIDO_SUCESSO"] == "SIM"]
+    conc = dm[dm["Estado"].isin(["CONCLUÍDO COM SUCESSO", "CONCLUÍDO SEM SUCESSO"])]
+    inst = suc[suc["Macro Atividade"] == "INST-FTTH"]
+    rep  = suc[suc["Macro Atividade"] == "REP-FTTH"]
+    dias = suc["DIA_FIM"].nunique()
+    efic = round(len(suc) / len(conc) * 100, 1) if len(conc) > 0 else 0
+    med  = round(len(suc) / dias, 1) if dias > 0 else 0
+
+    cols = st.columns(6)
+    for col, (lb, vl, sb, cl) in zip(cols, [
+        ("Concluidos",  f"{len(suc):,}",  "c/ sucesso",       "kpi-blue"),
+        ("Eficacia",    f"{efic}%",        "suc / total",      "kpi-green" if efic>=85 else "kpi-yellow" if efic>=70 else "kpi-red"),
+        ("Instalacoes", f"{len(inst):,}",  "INST-FTTH",        "kpi-blue"),
+        ("Reparos",     f"{len(rep):,}",   "REP-FTTH",         "kpi-purple"),
+        ("Dias Trab.",  f"{dias}",         "c/ encerramento",  "kpi-blue"),
+        ("Media/Dia",   f"{med}",          "atividades/dia",   "kpi-blue"),
+    ]):
+        col.markdown(_kpi(lb, vl, sb, cl), unsafe_allow_html=True)
+    st.write("")
+
+    _sec("Producao por Dia")
+    prod = suc.groupby("DIA_FIM").agg(
+        Total=("Número SA", "count"),
+        Inst =("Macro Atividade", lambda x: (x=="INST-FTTH").sum()),
+        Rep  =("Macro Atividade", lambda x: (x=="REP-FTTH").sum()),
+    ).reset_index()
+    ss = dm[dm["FLAG_CONCLUIDO_SEM_SUCESSO"]=="SIM"].groupby("DIA_FIM").size().reset_index(name="SS")
+    prod = prod.merge(ss, on="DIA_FIM", how="left")
+    prod["SS"]    = prod["SS"].fillna(0).astype(int)
+    prod["Efic%"] = (prod["Total"]/(prod["Total"]+prod["SS"])*100).round(1)
+    prod["Dia"]   = pd.to_datetime(prod["DIA_FIM"]).dt.strftime("%d/%m")
+
+    fig = go.Figure()
+    fig.add_bar(x=prod["Dia"], y=prod["Inst"], name="INST", marker_color=ROYAL)
+    fig.add_bar(x=prod["Dia"], y=prod["Rep"],  name="REP",  marker_color=ROYAL_LIGHT)
+    fig.update_layout(barmode="stack", showlegend=True, **_lyt("Producao Diaria - INST + REP", 320))
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(
+        prod[["Dia","Total","Inst","Rep","SS","Efic%"]].rename(
+            columns={"Inst":"INST","Rep":"REP","SS":"Sem Suc.","Efic%":"Eficacia%"}),
+        use_container_width=True, hide_index=True,
+        column_config={"Eficacia%": st.column_config.ProgressColumn(
+            "Eficacia%", format="%.1f%%", min_value=0, max_value=100)})
+
+    _sec("Pareto de Tecnicos")
+    pt = suc.groupby(["CODIGO_TECNICO_EXTRAIDO","NOME_TEC"]).size().reset_index(name="Prod")
+    pt = pt.sort_values("Prod", ascending=False).reset_index(drop=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Top 5 — Maior Producao**")
+        t5 = pt.head(5)
+        st.plotly_chart(
+            _bar_h(t5["NOME_TEC"], t5["Prod"], ROYAL,
+                   labels=t5["CODIGO_TECNICO_EXTRAIDO"], h=260),
+            use_container_width=True)
+    with c2:
+        st.markdown("**Top 5 — Menor Producao**")
+        b5 = pt.tail(5).sort_values("Prod")
+        st.plotly_chart(
+            _bar_h(b5["NOME_TEC"], b5["Prod"], ROYAL_LIGHT,
+                   labels=b5["CODIGO_TECNICO_EXTRAIDO"], h=260),
+            use_container_width=True)
+
+    _sec("Ranking Completo")
+    pt["#"] = range(1, len(pt)+1)
+    st.dataframe(
+        pt[["#","NOME_TEC","CODIGO_TECNICO_EXTRAIDO","Prod"]].rename(
+            columns={"NOME_TEC":"Nome","CODIGO_TECNICO_EXTRAIDO":"TR","Prod":"Producao"}),
+        use_container_width=True, hide_index=True,
+        column_config={"Producao": st.column_config.ProgressColumn(
+            "Producao", format="%d", min_value=0, max_value=int(pt["Prod"].max()))})
+
+    _sec("Evolucoes")
+    tab1, tab2 = st.tabs(["📅 Semanal","📆 Mensal"])
+    suc_sc = ds[ds["FLAG_CONCLUIDO_SUCESSO"]=="SIM"].copy()
+    with tab1:
+        suc_sc["AW"] = suc_sc["ANO_FIM"].astype(str)+"-S"+suc_sc["SEM_FIM"].astype(str).str.zfill(2)
+        ev = suc_sc.groupby("AW").size().reset_index(name="T").sort_values("AW").tail(12)
+        fig2 = go.Figure(go.Scatter(x=ev["AW"],y=ev["T"],mode="lines+markers",
+                                    line=dict(color=ROYAL,width=2),marker_size=7, marker_color=ROYAL))
+        fig2.update_layout(**_lyt("Producao Semanal - ultimas 12 semanas",300))
+        st.plotly_chart(fig2, use_container_width=True)
+    with tab2:
+        ev2 = suc_sc.groupby("MES_FIM").size().reset_index(name="T")
+        ev2["MES_FIM"] = ev2["MES_FIM"].astype(str)
+        ev2 = ev2.sort_values("MES_FIM").tail(12)
+        fig3 = go.Figure(go.Bar(x=ev2["MES_FIM"],y=ev2["T"],marker_color=ROYAL))
+        fig3.update_layout(**_lyt("Producao Mensal",300))
+        st.plotly_chart(fig3, use_container_width=True)
+
+
+def tela_repetidos(dm, ds, f):
+    _header("🔁", "Repetidos", f)
+
+    tem_vip = ("TEC_ANTERIOR" in dm.columns) and ("FLAG_REPETIDO" in dm.columns)
+
+    den_df = dm[
+        (dm["Macro Atividade"] == "REP-FTTH") &
+        (dm["FLAG_CONCLUIDO_SUCESSO"] == "SIM")
+    ]
+
+    if tem_vip:
+        num_df = dm[
+            (dm["FLAG_REPETIDO"] == "SIM") &
+            (dm["TEC_ANTERIOR"].notna()) &
+            (dm["TEC_ANTERIOR"].str.strip() != "")
+        ]
+        fonte_label = "🏛️ Fonte: VIP Oficial (TEC_ANTERIOR + FLAG_REPETIDO)"
     else:
-        await message.reply_text("❌ Opção não implementada.")
+        gpons_rep, _, _ = _calcular_repetidos_gpon(ds, f["mes"])
+        num_df = pd.DataFrame()
+        fonte_label = "⚙️ Fonte: Cálculo Interno (GPON)"
 
-# =============================================================================
-# MESSAGE HANDLER
-# =============================================================================
+    def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    
-    if context.user_data.get('aguardando_matricula'):
-        mat = text.upper()
-        if not re.match(r'^(TR|TT|TC)\d+$', mat):
-            await update.message.reply_text("❌ Formato inválido. Ex: TR818218")
-            return
-        
-        tec = await autenticar_tecnico(user_id, mat)
-        if tec:
-            context.user_data['tecnico'] = tec
-            context.user_data['matricula_usada'] = mat
-            context.user_data.pop('aguardando_matricula', None)
-            nome = extrair_nome_tecnico(tec) or update.effective_user.first_name
-            await update.message.reply_text(
-                f"✅ Autenticado!\n👤 Técnico: {nome}\n🆔 Matrícula: {mat}\n\nUse /menu para começar.",
-                parse_mode='Markdown'
-            )
+    if tem_vip:
+        den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+            Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else ""),
+            Total=("Número SA", "count")).reset_index()
+        num_tec = num_df.groupby("TEC_ANTERIOR").size().reset_index(name="Repetidos")
+        num_tec.rename(columns={"TEC_ANTERIOR": "CODIGO_TECNICO_EXTRAIDO"}, inplace=True)
+        tb = den_tec.merge(num_tec, on="CODIGO_TECNICO_EXTRAIDO", how="left")
+        tb["Repetidos"] = tb["Repetidos"].fillna(0).astype(int)
+        tb["Taxa%"] = (tb["Repetidos"] / tb["Total"].replace(0, 1) * 100).round(2)
+        tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
+        tb = tb.rename(columns={"CODIGO_TECNICO_EXTRAIDO": "TR"})
+    else:
+        den_tec = den_df.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+            Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else ""),
+            Total=("Número SA", "count")).reset_index()
+        rep_por_tec = {}
+        for gpon, info in gpons_rep.items():
+            tr = info.get("pai_tr", "")
+            if tr:
+                rep_por_tec[tr] = rep_por_tec.get(tr, 0) + 1
+        num_tec_df = pd.DataFrame(rep_por_tec.items(), columns=["CODIGO_TECNICO_EXTRAIDO", "Repetidos"]) if rep_por_tec else pd.DataFrame(columns=["CODIGO_TECNICO_EXTRAIDO", "Repetidos"])
+        tb = den_tec.merge(num_tec_df, on="CODIGO_TECNICO_EXTRAIDO", how="left")
+        tb["Repetidos"] = tb["Repetidos"].fillna(0).astype(int)
+        tb["Taxa%"] = (tb["Repetidos"] / tb["Total"].replace(0,1) * 100).round(2)
+        tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
+        tb = tb.rename(columns={"CODIGO_TECNICO_EXTRAIDO": "TR"})
+
+    total_rep_tabela = int(tb["Total"].sum())
+    repetidos_tabela = int(tb["Repetidos"].sum())
+    taxa_tabela = round(repetidos_tabela / total_rep_tabela * 100, 2) if total_rep_tabela > 0 else 0
+
+    rep_ab = ds[ds["FLAG_REPETIDO_ABERTO"] == "SIM"] if "FLAG_REPETIDO_ABERTO" in ds.columns else pd.DataFrame()
+    if tem_vip:
+        rep_alrm = dm[(dm["FLAG_REPETIDO"] == "SIM") & (dm["ALARMADO"] == "SIM")]
+        rep_alrm_count = len(rep_alrm)
+    else:
+        rep_alrm_count = 0
+
+    cols = st.columns(5)
+    for col, (lb,vl,sb,cl) in zip(cols,[
+        ("Total Reparos", f"{total_rep_tabela:,}",   "abertos no mes",  "kpi-blue"),
+        ("Repetidos",     f"{repetidos_tabela:,}",   "reparos filhos",  "kpi-red" if taxa_tabela>9 else "kpi-yellow"),
+        ("Taxa %",        f"{taxa_tabela}%",          "meta: <= 9%",     "kpi-red" if taxa_tabela>9 else "kpi-green"),
+        ("Em Garantia",   f"{len(rep_ab):,}",         "abertos 30d",     "kpi-yellow"),
+        ("Alarmados",     f"{rep_alrm_count}",        "GPON alarmado",   "kpi-red" if rep_alrm_count>0 else "kpi-green"),
+    ]):
+        col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
+
+    st.markdown(
+        f'<div style="font-size:11px;color:#64748b;margin:6px 0 14px 2px;">{fonte_label}</div>',
+        unsafe_allow_html=True)
+
+    _sec("Indicador por Tecnico")
+    tb["Status"] = tb["Taxa%"].apply(lambda t: "🔴" if t>12 else "🟡" if t>9 else "🟢" if t>0 else "⚪")
+    st.dataframe(tb[["Status","Nome","TR","Repetidos","Total","Taxa%"]], use_container_width=True, hide_index=True,
+                 column_config={"Taxa%": st.column_config.ProgressColumn(
+                     "Taxa%", format="%.1f%%", min_value=0,
+                     max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
+
+    if tem_vip and not num_df.empty:
+        _sec("Detalhamento — Repetidos (VIP)")
+        num_df["Endereço"] = ""
+        if "Logradouro" in num_df.columns:
+            num_df["Endereço"] = num_df["Logradouro"].fillna("").astype(str)
+        if "Número" in num_df.columns:
+            num_df["Endereço"] += (", " + num_df["Número"].fillna("").astype(str)).str.rstrip(", ")
+        if "Bairro" in num_df.columns:
+            num_df["Endereço"] += (" - " + num_df["Bairro"].fillna("").astype(str)).str.rstrip(" -")
+
+        cols_det = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
+                                "rep_dias_anterior","rep_tecnico_filho","rep_cod_fech_anterior",
+                                "rep_agrupador_anterior","Cidade","TEC_ANTERIOR","Endereço"] if c in num_df.columns]
+        det = num_df[cols_det].copy()
+        det.rename(columns={
+            "FSLOI_GPONAccess":"GPON","Número SA":"SA Filho",
+            "CODIGO_TECNICO_EXTRAIDO":"TR (executor)",
+            "TEC_ANTERIOR":"TR (PAI)",
+        }, inplace=True)
+        st.dataframe(det, use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # Repetidos por dia + linha de tendência
+        _sec("Repetidos por Dia do Mês")
+        if "DIA_FIM" in num_df.columns:
+            diario = num_df.groupby("DIA_FIM").size().reset_index(name="Repetidos")
+            diario["Dia"] = pd.to_datetime(diario["DIA_FIM"]).dt.strftime("%d/%m")
+            fig_dia = make_subplots(specs=[[{"secondary_y": False}]])
+            fig_dia.add_bar(x=diario["Dia"], y=diario["Repetidos"], name="Repetidos", marker_color=ROYAL)
+            fig_dia.add_scatter(x=diario["Dia"], y=diario["Repetidos"], mode="lines+markers",
+                                line=dict(color=ROYAL_LIGHT, width=2), marker=dict(size=6, color=ROYAL_LIGHT),
+                                name="Tendência")
+            fig_dia.update_layout(**_lyt("", 300))
+            fig_dia.update_yaxes(title_text="Quantidade")
+            st.plotly_chart(fig_dia, use_container_width=True)
         else:
-            await update.message.reply_text(f"❌ Matrícula {mat} não encontrada.")
-        return
-    
-    if not verificar_autenticacao(user_id, context) and not verificar_supervisor_autenticado(user_id, context):
-        await update.message.reply_text("❌ Não autenticado. Use /start.")
-        return
-    
-    comandos_texto = {
-        '/menu': lambda: menu(update, context),
-        '/minhas': lambda: minhas_atividades_core(update.message, context, False),
-        '/encerradas': lambda: minhas_encerradas_core(update.message, context),
-        '/nao_atribuidas': lambda: nao_atribuidas_core(update.message, context),
-        '/alarmados': lambda: alarmados_core(update.message, context),
-        '/repetidos': lambda: repetidos_core(update.message, context),
-        '/repetidos_detalhado': lambda: repetidos_detalhado_core(update.message, context),
-        '/infancia': lambda: infancia_core(update.message, context),
-        '/infancia_detalhado': lambda: infancia_detalhado_core(update.message, context),
-        '/p0': lambda: p0_core(update.message, context),
-        '/velocidades': lambda: velocidades_core(update.message, context),
-        '/reversa': lambda: reversa_core(update.message, context),
-        '/mascaras': lambda: mascaras_core(update.message, context),
-        '/presenca': lambda: presenca_core(update.message, context),
-        '/ajuda': lambda: ajuda(update, context),
-        '/sair': lambda: sair(update, context),
-        '/cache': lambda: cache_limpar(update, context),
-    }
-    
-    if text.lower() in comandos_texto:
-        await comandos_texto[text.lower()]()
-    else:
-        await update.message.reply_text("ℹ️ Comando não reconhecido. Use /menu.")
+            st.info("Dados insuficientes para gráfico diário.")
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Erro: {context.error}")
+        # Pareto de causas (Causa Macro)
+        _sec("Pareto de Causas dos Repetidos")
+        mapa_causas = carregar_causas_macro()
+        if mapa_causas:
+            num_df["CAUSA_MACRO"] = num_df["Código de encerramento"].astype(str).str.strip().map(mapa_causas)
+            num_df["CAUSA_MACRO"] = num_df["CAUSA_MACRO"].fillna("OUTROS")
+        else:
+            num_df["CAUSA_MACRO"] = num_df["Descrição"].str[:50]
+
+        causas = num_df.groupby("CAUSA_MACRO").size().reset_index(name="Qtd")
+        causas = causas.sort_values("Qtd", ascending=False).head(15)
+        causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
+        causas["Acum"] = causas["Perc"].cumsum()
+        fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_causas.add_bar(x=causas["CAUSA_MACRO"], y=causas["Qtd"],
+                           name="Ocorrências", marker_color=ROYAL)
+        fig_causas.add_scatter(x=causas["CAUSA_MACRO"], y=causas["Acum"],
+                               name="% Acumulado", mode="lines+markers",
+                               line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
+        fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
+        fig_causas.update_yaxes(showgrid=False, secondary_y=True)
+        st.plotly_chart(fig_causas, use_container_width=True)
+
+        # Pareto por técnico
+        _sec("Pareto de Técnicos — Repetidos")
+        pareto_tec = tb[["Nome","TR","Repetidos"]].sort_values("Repetidos", ascending=False)
+        pareto_tec["Perc"] = (pareto_tec["Repetidos"] / pareto_tec["Repetidos"].sum() * 100).round(1)
+        pareto_tec["Acum"] = pareto_tec["Perc"].cumsum()
+        fig_tec = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_tec.add_bar(x=pareto_tec["Nome"], y=pareto_tec["Repetidos"],
+                        name="Repetidos", marker_color=ROYAL)
+        fig_tec.add_scatter(x=pareto_tec["Nome"], y=pareto_tec["Acum"],
+                            name="% Acumulado", mode="lines+markers",
+                            line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
+        fig_tec.update_layout(**_lyt("Pareto de Técnicos", 400))
+        fig_tec.update_yaxes(showgrid=False, secondary_y=True)
+        st.plotly_chart(fig_tec, use_container_width=True)
+
+
+def _calcular_repetidos_gpon(ds, mes_str):
     try:
-        await update.effective_message.reply_text("❌ Erro interno. Tente novamente.")
-    except:
-        pass
+        per = pd.Period(mes_str, freq="M")
+        ano, mes = per.year, per.month
+    except Exception:
+        return {}, 0, pd.DataFrame()
+
+    primeiro_dia = pd.Timestamp(ano, mes, 1)
+    if mes == 12:
+        ultimo_dia = pd.Timestamp(ano+1, 1, 1) - pd.Timedelta(days=1)
+    else:
+        ultimo_dia = pd.Timestamp(ano, mes+1, 1) - pd.Timedelta(days=1)
+
+    df = ds.copy()
+    if "FIM_DT" not in df.columns:
+        df["FIM_DT"] = pd.to_datetime(df["DH_FIM_EXEC_REAL"], dayfirst=True, errors="coerce")
+    if "AB_DT" not in df.columns:
+        df["AB_DT"] = pd.to_datetime(df["AB_BA"], dayfirst=True, errors="coerce")
+
+    df["_GPON"] = df["FSLOI_GPONAccess"].astype(str).str.strip().str.upper()
+
+    df_rep = df[
+        (df["Macro Atividade"] == "REP-FTTH") &
+        (df["FLAG_CONCLUIDO_SUCESSO"] == "SIM") &
+        (df["FIM_DT"].notna()) &
+        (df["_GPON"].notna()) &
+        (~df["_GPON"].isin(["", "NAN"]))
+    ].copy()
+
+    gpons_repetidos = {}
+    for gpon, grupo in df_rep.groupby("_GPON"):
+        grupo = grupo.sort_values("FIM_DT").reset_index(drop=True)
+        if len(grupo) < 2:
+            continue
+        for i in range(len(grupo) - 1):
+            pai  = grupo.iloc[i]
+            filho = grupo.iloc[i+1]
+            delta = (filho["FIM_DT"] - pai["FIM_DT"]).days
+            ab_filho = filho.get("AB_DT")
+            if pd.notna(ab_filho) and (ab_filho < primeiro_dia or ab_filho > ultimo_dia):
+                continue
+            if delta <= 30:
+                if gpon not in gpons_repetidos:
+                    gpons_repetidos[gpon] = {
+                        "pai_tr"   : pai.get("CODIGO_TECNICO_EXTRAIDO", ""),
+                        "pai_nome" : pai.get("NOME_TEC", ""),
+                        "pai_sa"   : pai.get("Número SA", ""),
+                        "pai_fim"  : pai["FIM_DT"],
+                        "filho_tr" : filho.get("CODIGO_TECNICO_EXTRAIDO", ""),
+                        "filho_sa" : filho.get("Número SA", ""),
+                        "delta"    : delta,
+                    }
+                break
+
+    den_df = df[
+        (df["Macro Atividade"] == "REP-FTTH") &
+        (df["FLAG_CONCLUIDO_SUCESSO"] == "SIM") &
+        (df["AB_DT"].notna()) &
+        (df["AB_DT"] >= primeiro_dia) &
+        (df["AB_DT"] <= ultimo_dia)
+    ]
+    return gpons_repetidos, len(den_df), den_df
+
+
+def tela_infancia(dm, ds, f):
+    _header("👶", "Infancia", f)
+
+    inst = dm[
+        (dm["Macro Atividade"] == "INST-FTTH") &
+        (dm["FLAG_CONCLUIDO_SUCESSO"] == "SIM")
+    ]
+
+    tem_vip_inf = "FLAG_INFANCIA" in inst.columns
+
+    if tem_vip_inf:
+        inf = inst[inst["FLAG_INFANCIA"] == "SIM"]
+        fonte_label = "🏛️ Fonte: VIP Oficial"
+    else:
+        rep = ds[(ds["Macro Atividade"]=="REP-FTTH") & (ds["FLAG_CONCLUIDO_SUCESSO"]=="SIM")]
+        inf_list = []
+        for _, irow in inst.iterrows():
+            gpon = irow["FSLOI_GPONAccess"]
+            if pd.isna(gpon): continue
+            fim_inst = irow["FIM_DT"]
+            if pd.isna(fim_inst): continue
+            limite = fim_inst + pd.Timedelta(days=30)
+            filhos = rep[(rep["FSLOI_GPONAccess"]==gpon) & (rep["FIM_DT"]>fim_inst) & (rep["FIM_DT"]<=limite)]
+            if not filhos.empty:
+                inf_list.append(irow)
+        inf = pd.DataFrame(inf_list) if inf_list else pd.DataFrame()
+        fonte_label = "⚙️ Fonte: Cálculo Interno"
+
+    taxa = round(len(inf)/len(inst)*100,2) if len(inst)>0 else 0
+    estados_ab = ["ATRIBUÍDO","NÃO ATRIBUÍDO","RECEBIDO","EM EXECUÇÃO","EM DESLOCAMENTO"]
+    gpons = set(inf["FSLOI_GPONAccess"].dropna().str.upper())
+    rep_ab = ds[(ds["Macro Atividade"]=="REP-FTTH") &
+                (ds["Estado"].isin(estados_ab)) &
+                (ds["FSLOI_GPONAccess"].str.upper().isin(gpons))] if gpons else pd.DataFrame()
+    inf_alrm = inf[inf["ALARMADO"]=="SIM"] if "ALARMADO" in inf.columns else pd.DataFrame()
+
+    cols = st.columns(5)
+    for col,(lb,vl,sb,cl) in zip(cols,[
+        ("Total Inst.",  f"{len(inst):,}", "INST concluidas",  "kpi-blue"),
+        ("Infancia",     f"{len(inf):,}",  "reparo em 30d",    "kpi-red" if taxa>5 else "kpi-yellow"),
+        ("Taxa %",       f"{taxa}%",       "meta: <= 5%",      "kpi-red" if taxa>5 else "kpi-green"),
+        ("Inf. Aberta",  f"{len(rep_ab):,}","reparo aberto",   "kpi-yellow"),
+        ("Alarmados",    f"{len(inf_alrm):,}","GPON alarmado", "kpi-red" if len(inf_alrm)>0 else "kpi-green"),
+    ]):
+        col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
+
+    st.markdown(
+        f'<div style="font-size:11px;color:#64748b;margin:6px 0 14px 2px;">{fonte_label}</div>',
+        unsafe_allow_html=True)
+
+    _sec("Indicador por Tecnico")
+    def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
+
+    di = inst.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+        Total=("Número SA","count"),
+        Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0]) if len(x) else "")
+    ).reset_index()
+    if tem_vip_inf:
+        ni = inf.groupby("CODIGO_TECNICO_EXTRAIDO").size().reset_index(name="Infancia")
+    else:
+        ni = inf.groupby("CODIGO_TECNICO_EXTRAIDO").size().reset_index(name="Infancia") if not inf.empty else pd.DataFrame(columns=["CODIGO_TECNICO_EXTRAIDO","Infancia"])
+
+    tb = di.merge(ni, on="CODIGO_TECNICO_EXTRAIDO", how="left")
+    tb["Infancia"] = tb["Infancia"].fillna(0).astype(int)
+    tb["Taxa%"] = (tb["Infancia"] / tb["Total"].replace(0,1) * 100).round(2)
+    tb = tb.sort_values("Taxa%", ascending=False).reset_index(drop=True)
+    tb = tb.rename(columns={"CODIGO_TECNICO_EXTRAIDO":"TR"})
+    tb["Status"] = tb["Taxa%"].apply(lambda t: "🔴" if t>8 else "🟡" if t>5 else "🟢" if t>0 else "⚪")
+    st.dataframe(tb[["Status","Nome","TR","Infancia","Total","Taxa%"]], use_container_width=True, hide_index=True,
+                 column_config={"Taxa%": st.column_config.ProgressColumn(
+                     "Taxa%", format="%.1f%%", min_value=0, max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
+
+    if tem_vip_inf and not inf.empty:
+        _sec("Detalhamento — Infância (VIP)")
+        cols_det = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
+                                "inf_dias_anterior","inf_tecnico_filho","inf_dat_fech_anterior","Cidade"] if c in inf.columns]
+        det = inf[cols_det].drop_duplicates(subset=["FSLOI_GPONAccess"])
+        det.rename(columns={
+            "FSLOI_GPONAccess":"GPON","Número SA":"SA Inst.",
+            "CODIGO_TECNICO_EXTRAIDO":"TR (Instalador)",
+            "inf_dias_anterior":"Dias p/ reparo",
+            "inf_tecnico_filho":"Tec. que Reparou"}, inplace=True)
+        st.dataframe(det, use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # Infância por dia do mês + linha de tendência
+        _sec("Infância por Dia do Mês")
+        if "DIA_FIM" in inf.columns:
+            diario = inf.groupby("DIA_FIM").size().reset_index(name="Infancia")
+            diario["Dia"] = pd.to_datetime(diario["DIA_FIM"]).dt.strftime("%d/%m")
+            fig_dia = make_subplots(specs=[[{"secondary_y": False}]])
+            fig_dia.add_bar(x=diario["Dia"], y=diario["Infancia"], name="Infância", marker_color=ROYAL)
+            fig_dia.add_scatter(x=diario["Dia"], y=diario["Infancia"], mode="lines+markers",
+                                line=dict(color=ROYAL_LIGHT, width=2), marker=dict(size=6, color=ROYAL_LIGHT),
+                                name="Tendência")
+            fig_dia.update_layout(**_lyt("", 300))
+            fig_dia.update_yaxes(title_text="Quantidade")
+            st.plotly_chart(fig_dia, use_container_width=True)
+        else:
+            st.info("Dados insuficientes para gráfico diário.")
+
+        # Pareto de causas (Causa Macro)
+        _sec("Pareto de Causas da Infância")
+        sas = inf["SA_REPARO_INFANCIA"].dropna().unique() if "SA_REPARO_INFANCIA" in inf.columns else []
+        rows = ds[ds["Número SA"].isin(sas)] if len(sas) else pd.DataFrame()
+        if not rows.empty:
+            mapa_causas = carregar_causas_macro()
+            if mapa_causas:
+                rows["CAUSA_MACRO"] = rows["Código de encerramento"].astype(str).str.strip().map(mapa_causas)
+                rows["CAUSA_MACRO"] = rows["CAUSA_MACRO"].fillna("OUTROS")
+            else:
+                rows["CAUSA_MACRO"] = rows["Descrição"].str[:50]
+            causas = rows.groupby("CAUSA_MACRO").size().reset_index(name="Qtd")
+            causas = causas.sort_values("Qtd", ascending=False).head(15)
+            causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
+            causas["Acum"] = causas["Perc"].cumsum()
+            fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
+            fig_causas.add_bar(x=causas["CAUSA_MACRO"], y=causas["Qtd"],
+                               name="Ocorrências", marker_color=ROYAL)
+            fig_causas.add_scatter(x=causas["CAUSA_MACRO"], y=causas["Acum"],
+                                   name="% Acumulado", mode="lines+markers",
+                                   line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
+            fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
+            fig_causas.update_yaxes(showgrid=False, secondary_y=True)
+            st.plotly_chart(fig_causas, use_container_width=True)
+        else:
+            st.info("Sem dados de causa dos reparos de infância.")
+
+        # Pareto por técnico (infância)
+        _sec("Pareto de Técnicos — Infância")
+        pareto_tec = tb[["Nome","TR","Infancia"]].sort_values("Infancia", ascending=False)
+        pareto_tec["Perc"] = (pareto_tec["Infancia"] / pareto_tec["Infancia"].sum() * 100).round(1)
+        pareto_tec["Acum"] = pareto_tec["Perc"].cumsum()
+        fig_tec = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_tec.add_bar(x=pareto_tec["Nome"], y=pareto_tec["Infancia"],
+                        name="Infância", marker_color=ROYAL)
+        fig_tec.add_scatter(x=pareto_tec["Nome"], y=pareto_tec["Acum"],
+                            name="% Acumulado", mode="lines+markers",
+                            line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
+        fig_tec.update_layout(**_lyt("Pareto de Técnicos", 400))
+        fig_tec.update_yaxes(showgrid=False, secondary_y=True)
+        st.plotly_chart(fig_tec, use_container_width=True)
+
+
+def tela_calendario(df, ds, f):
+    import calendar as _cal
+    _header("📆", "Calendario Mensal", f)
+
+    mes_str = f["mes"]
+    try:
+        per = pd.Period(mes_str, freq="M")
+        ano, mes = per.year, per.month
+    except Exception:
+        st.error("Mes invalido."); return
+
+    hoje      = datetime.now()
+    dias_mes  = _cal.monthrange(ano, mes)[1]
+    dia_max   = hoje.day if (ano == hoje.year and mes == hoje.month) else dias_mes
+    dias_range = list(range(1, dia_max + 1))
+    meses_pt  = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"]
+    lbl_mes   = f"{meses_pt[mes-1]}/{ano}"
+
+    df_m = ds[(ds["FIM_DT"].dt.year==ano) & (ds["FIM_DT"].dt.month==mes)].copy()
+    df_m["DIA"] = df_m["FIM_DT"].dt.day.astype(int)
+    suc_m    = df_m[df_m["FLAG_CONCLUIDO_SUCESSO"]    == "SIM"]
+    semsuc_m = df_m[df_m["FLAG_CONCLUIDO_SEM_SUCESSO"] == "SIM"]
+
+    if suc_m.empty:
+        st.warning("Sem dados de producao para o mes selecionado.")
+        return
+
+    tecs = suc_m["CODIGO_TECNICO_EXTRAIDO"].nunique()
+    efic = round(len(suc_m)/(len(suc_m)+len(semsuc_m))*100,1) if (len(suc_m)+len(semsuc_m))>0 else 0
+    cols = st.columns(5)
+    for col,(lb,vl,sb,cl) in zip(cols,[
+        ("Tecnicos Ativos", f"{tecs}",           lbl_mes,       "kpi-blue"),
+        ("Concluidos",      f"{len(suc_m):,}",   "c/ sucesso",  "kpi-blue"),
+        ("INST",            f"{(suc_m['Macro Atividade']=='INST-FTTH').sum():,}", "", "kpi-blue"),
+        ("REP",             f"{(suc_m['Macro Atividade']=='REP-FTTH').sum():,}",  "", "kpi-purple"),
+        ("Eficacia",        f"{efic}%",           "suc/total",   "kpi-green" if efic>=85 else "kpi-yellow"),
+    ]):
+        col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
+    st.write("")
+
+    st.markdown("""
+    <div style="display:flex;gap:10px;margin-bottom:10px;font-size:11px;align-items:center;">
+        <span style="background:#7c3aed;color:white;padding:2px 8px;border-radius:4px;">≥8</span>
+        <span style="background:#000000;color:white;padding:2px 8px;border-radius:4px;">6-7</span>
+        <span style="background:#1e40af;color:white;padding:2px 8px;border-radius:4px;">5</span>
+        <span style="background:#d4edda;color:#155724;padding:2px 8px;border-radius:4px;">4</span>
+        <span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;">3</span>
+        <span style="background:#ffcccc;color:#721c24;padding:2px 8px;border-radius:4px;">1-2</span>
+        <span style="background:#f0f0f0;color:#6c757d;padding:2px 8px;border-radius:4px;">0</span>
+        <span style="color:#64748b;margin-left:4px;">= atividades no dia</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _sec(f"Producao por Tecnico — {lbl_mes}")
+
+    def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
+
+    suc_range = suc_m[suc_m["DIA"].isin(dias_range)]
+    pivot = suc_range.groupby(["CODIGO_TECNICO_EXTRAIDO","DIA"]).size().unstack(fill_value=0)
+    for d in dias_range:
+        if d not in pivot.columns:
+            pivot[d] = 0
+    pivot = pivot[dias_range]
+
+    nomes     = suc_m.groupby("CODIGO_TECNICO_EXTRAIDO")["Técnico Atribuído"].first().apply(_n)
+    ss_tec    = semsuc_m.groupby("CODIGO_TECNICO_EXTRAIDO").size()
+    dias_trab = suc_range.groupby("CODIGO_TECNICO_EXTRAIDO")["DIA"].nunique()
+
+    pivot.insert(0, "Nome", nomes)
+    pivot["Total"]     = pivot[dias_range].sum(axis=1)
+    pivot["Sem Suc."]  = ss_tec.reindex(pivot.index).fillna(0).astype(int)
+    pivot["Dias"]      = dias_trab.reindex(pivot.index).fillna(0).astype(int)
+    pivot["Media"]     = (pivot["Total"] / pivot["Dias"].replace(0,1)).round(1)
+    pivot["Eficacia%"] = (pivot["Total"]/(pivot["Total"]+pivot["Sem Suc."]).replace(0,1)*100).round(1)
+    pivot = pivot.sort_values("Total", ascending=False).reset_index()
+    pivot = pivot.rename(columns={"CODIGO_TECNICO_EXTRAIDO":"TR"})
+
+    cols_dia  = [str(d) for d in dias_range]
+    cols_order = ["Nome","TR"] + dias_range + ["Dias","Total","Sem Suc.","Media","Eficacia%"]
+    pivot = pivot[cols_order]
+    pivot.columns = ["Nome","TR"] + cols_dia + ["Dias","Total","Sem Suc.","Media","Eficacia%"]
+
+    def _cor_cel(v):
+        try:
+            v = int(v)
+        except: return ""
+        if v >= 8: return "background-color:#7c3aed;color:white;font-weight:700;text-align:center"
+        if v in (6,7): return "background-color:#000000;color:white;font-weight:700;text-align:center"
+        if v == 5: return "background-color:#1e40af;color:white;font-weight:700;text-align:center"
+        if v == 4: return "background-color:#d4edda;color:#155724;font-weight:600;text-align:center"
+        if v == 3: return "background-color:#fff3cd;color:#856404;font-weight:600;text-align:center"
+        if v in (1,2): return "background-color:#ffcccc;color:#721c24;text-align:center"
+        return "background-color:#f0f0f0;color:#adb5bd;text-align:center"
+
+    try:
+        styled = pivot.style.map(_cor_cel, subset=cols_dia)
+    except AttributeError:
+        styled = pivot.style.applymap(_cor_cel, subset=cols_dia)
+
+    max_p = int(pivot["Total"].max()) if not pivot.empty else 1
+    altura_total = 38 + (len(pivot) * 35)
+
+    st.dataframe(styled, use_container_width=True, hide_index=True,
+        column_config={
+            "Nome"     : st.column_config.TextColumn("Nome", width="medium"),
+            "TR"       : st.column_config.TextColumn("TR", width="small"),
+            "Total"    : st.column_config.ProgressColumn("Total", format="%d", min_value=0, max_value=max_p),
+            "Eficacia%": st.column_config.ProgressColumn("Eficacia%", format="%.1f%%", min_value=0, max_value=100),
+            "Media"    : st.column_config.NumberColumn("Media", format="%.1f"),
+        }, height=altura_total)
+
+    ef_list = []
+    for d in dias_range:
+        rows = df_m[df_m["DIA"] == d]
+        s = (rows["FLAG_CONCLUIDO_SUCESSO"]=="SIM").sum()
+        ss = (rows["FLAG_CONCLUIDO_SEM_SUCESSO"]=="SIM").sum()
+        ef_list.append({"DIA": d, "Concluidos": s, "Eficacia%": round(s / max(s+ss, 1) * 100, 1)})
+    ef_dia = pd.DataFrame(ef_list)
+
+    fig = go.Figure()
+    fig.add_bar(x=ef_dia["DIA"].astype(str), y=ef_dia["Concluidos"], name="Concluidos", marker_color=ROYAL, yaxis="y")
+    fig.add_scatter(x=ef_dia["DIA"].astype(str), y=ef_dia["Eficacia%"], name="Eficacia%", mode="lines+markers",
+                    line=dict(color=ROYAL_LIGHT,width=2), marker_size=6, yaxis="y2")
+    fig.add_hline(y=85, line_dash="dash", line_color=C["yellow"], annotation_text="Meta 85%", yref="y2")
+    fig.update_layout(
+        **_lyt(f"Producao e Eficacia — {lbl_mes}", 320),
+        yaxis2=dict(overlaying="y", side="right", showgrid=False, tickfont_color=C["green"], range=[0,110]),
+        showlegend=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def tela_diario(df, ds, f):
+    _header("📅", "Controle do Dia", f)
+
+    datas_disp = sorted(ds["FIM_DT"].dropna().dt.date.unique(), reverse=True)
+    if not datas_disp:
+        st.warning("Nenhuma data disponivel.")
+        return
+
+    hoje = datetime.today().date()
+    if hoje in datas_disp:
+        valor_padrao = hoje
+    else:
+        valor_padrao = datas_disp[0]
+
+    c_pick, c_info = st.columns([2, 5])
+    with c_pick:
+        dia_sel = st.date_input("Data de referencia",
+            value=valor_padrao,
+            min_value=datas_disp[-1],
+            max_value=datas_disp[0],
+            key="dia_ref")
+
+    dm  = ds[ds["FIM_DT"].dt.date == dia_sel].copy()
+    dm_ab = ds[ds["AB_DT"].dt.date == dia_sel].copy()
+
+    suc     = dm[dm["FLAG_CONCLUIDO_SUCESSO"]    == "SIM"]
+    sem_suc = dm[dm["FLAG_CONCLUIDO_SEM_SUCESSO"] == "SIM"]
+    inst_d  = suc[suc["Macro Atividade"] == "INST-FTTH"]
+    rep_d   = suc[suc["Macro Atividade"] == "REP-FTTH"]
+    tecs_atv = suc["CODIGO_TECNICO_EXTRAIDO"].nunique()
+    efic    = round(len(suc)/(len(suc)+len(sem_suc))*100,1) if (len(suc)+len(sem_suc))>0 else 0
+
+    with c_info:
+        st.markdown(
+            f"<div style='margin-top:28px;font-size:12px;color:#64748b;'>"
+            f"<b>{dia_sel.strftime('%d/%m/%Y')}</b> — "
+            f"{tecs_atv} tecnicos ativos | {len(suc)+len(sem_suc)} atividades concluidas</div>",
+            unsafe_allow_html=True)
+
+    rep_dia_ab = dm_ab[dm_ab["FLAG_REPETIDO_30D"]  == "SIM"]
+    rep_ab_tot = ds[ds["FLAG_REPETIDO_ABERTO"]      == "SIM"]
+    inf_dia    = suc[suc["FLAG_INFANCIA_30D"]        == "SIM"]
+    p0_10 = ds[(ds["FIM_DT"].dt.date == dia_sel) & (ds["FLAG_P0_10_DIA"] == "SIM")]
+    p0_15 = ds[(ds["FIM_DT"].dt.date == dia_sel) & (ds["FLAG_P0_15_DIA"] == "SIM")]
+
+    cols = st.columns(7)
+    for col, (lb,vl,sb,cl) in zip(cols, [
+        ("Concluidos",    f"{len(suc):,}",  f"INST:{len(inst_d)} REP:{len(rep_d)}", "kpi-blue"),
+        ("Eficacia",      f"{efic}%",        "suc/total",   "kpi-green" if efic>=85 else "kpi-yellow" if efic>=70 else "kpi-red"),
+        ("Sem Sucesso",   f"{len(sem_suc):,}","pendencias",  "kpi-red" if len(sem_suc)>0 else "kpi-green"),
+        ("Rep. Dia",      f"{len(rep_dia_ab):,}","abertos hoje","kpi-red" if len(rep_dia_ab)>0 else "kpi-green"),
+        ("Rep. Abertos",  f"{len(rep_ab_tot):,}","em garantia","kpi-yellow" if len(rep_ab_tot)>0 else "kpi-green"),
+        ("P0 10h",        f"{p0_10['CODIGO_TECNICO_EXTRAIDO'].nunique()}","tecnicos","kpi-red" if not p0_10.empty else "kpi-green"),
+        ("P0 15h",        f"{p0_15['CODIGO_TECNICO_EXTRAIDO'].nunique()}","tecnicos","kpi-red" if not p0_15.empty else "kpi-green"),
+    ]):
+        col.markdown(_kpi(lb,vl,sb,cl), unsafe_allow_html=True)
+    st.write("")
+
+    def _extrair_tr(nome):
+        if pd.isna(nome) or not nome: return ""
+        m = re.search(r"(TR|TT|TC)\d+", str(nome), re.I)
+        return m.group(0).upper() if m else ""
+
+    _sec("Produtividade por Tecnico")
+    def _n(v): return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
+    if suc.empty:
+        st.info("Nenhuma atividade concluida neste dia.")
+    else:
+        pt = suc.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+            Nome  =("Técnico Atribuído", lambda x: _n(x.iloc[0])),
+            Total =("Número SA","count"),
+            INST  =("Macro Atividade", lambda x: (x=="INST-FTTH").sum()),
+            REP   =("Macro Atividade", lambda x: (x=="REP-FTTH").sum()),
+        ).reset_index()
+        ss_tec = sem_suc.groupby("CODIGO_TECNICO_EXTRAIDO").size().reset_index(name="SemSuc")
+        pt = pt.merge(ss_tec, on="CODIGO_TECNICO_EXTRAIDO", how="left")
+        pt["SemSuc"] = pt["SemSuc"].fillna(0).astype(int)
+        pt["Efic%"]  = (pt["Total"]/(pt["Total"]+pt["SemSuc"]).replace(0,1)*100).round(1)
+        pt = pt.sort_values("Total", ascending=False).reset_index(drop=True)
+        pt.columns = ["TR","Nome","Total","INST","REP","Sem Suc.","Eficacia%"]
+        st.dataframe(pt, use_container_width=True, hide_index=True,
+            column_config={
+                "Total":    st.column_config.ProgressColumn("Total", format="%d", min_value=0,
+                            max_value=int(pt["Total"].max()) if not pt.empty else 1),
+                "Eficacia%":st.column_config.ProgressColumn("Eficacia%", format="%.1f%%", min_value=0, max_value=100),
+            })
+
+    _sec("Sem Sucesso — Pendencias do Dia")
+    if sem_suc.empty:
+        st.success("Nenhuma pendencia no dia.")
+    else:
+        ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
+                           "Macro Atividade","Descrição","Observação",
+                           "Código de encerramento"] if c in sem_suc.columns]
+        st.dataframe(sem_suc[ok].rename(columns={
+            "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR","NOME_TEC":"Tecnico",
+            "Macro Atividade":"Tipo","Código de encerramento":"Cod. Enc."}),
+            use_container_width=True, hide_index=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        _sec("Repetidos Abertos no Dia")
+        if rep_dia_ab.empty:
+            st.success("Nenhum repetido aberto hoje.")
+        else:
+            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess"]
+            if "rep_tecnico_pai" in rep_dia_ab.columns:
+                rep_dia_ab["TR_PAI"] = rep_dia_ab["rep_tecnico_pai"].apply(_extrair_tr)
+                cols_rep.extend(["rep_tecnico_pai","TR_PAI"])
+            if "ALARMADO" in rep_dia_ab.columns:
+                cols_rep.append("ALARMADO")
+            df_show = rep_dia_ab[cols_rep].copy()
+            rename_map = {
+                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "rep_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
+    with c2:
+        _sec("Repetidos em Garantia (Abertos)")
+        if rep_ab_tot.empty:
+            st.success("Nenhum reparo em garantia.")
+        else:
+            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","DIA_AB"]
+            if "rep_tecnico_pai" in rep_ab_tot.columns:
+                rep_ab_tot["TR_PAI"] = rep_ab_tot["rep_tecnico_pai"].apply(_extrair_tr)
+                cols_rep.extend(["rep_tecnico_pai","TR_PAI"])
+            if "ALARMADO" in rep_ab_tot.columns:
+                cols_rep.append("ALARMADO")
+            df_show = rep_ab_tot[cols_rep].copy()
+            rename_map = {
+                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON","DIA_AB":"Abertura",
+                "rep_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
+    c3, c4 = st.columns(2)
+    with c3:
+        _sec("Infancia — Instalacoes do Dia")
+        if inf_dia.empty:
+            st.success("Nenhuma infancia hoje.")
+        else:
+            cols_inf = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess"]
+            if "SA_REPARO_INFANCIA" in inf_dia.columns:
+                cols_inf.append("SA_REPARO_INFANCIA")
+            if "inf_tecnico_pai" in inf_dia.columns:
+                inf_dia["TR_PAI"] = inf_dia["inf_tecnico_pai"].apply(_extrair_tr)
+                cols_inf.extend(["inf_tecnico_pai","TR_PAI"])
+            df_show = inf_dia[cols_inf].copy()
+            rename_map = {
+                "Número SA":"SA Inst.","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "SA_REPARO_INFANCIA":"SA Reparo",
+                "inf_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
+    with c4:
+        _sec("Infancia Aberta (Reparo em Andamento)")
+        estados_ab = ["ATRIBUÍDO","NÃO ATRIBUÍDO","RECEBIDO","EM EXECUÇÃO","EM DESLOCAMENTO"]
+        gpons_suc = set(suc["FSLOI_GPONAccess"].dropna().str.upper())
+        inf_ab_dia = ds[
+            (ds["Macro Atividade"] == "REP-FTTH") &
+            (ds["Estado"].isin(estados_ab)) &
+            (ds["FLAG_INFANCIA_30D"] == "SIM") &
+            (ds["FSLOI_GPONAccess"].str.upper().isin(gpons_suc))
+        ].copy()
+        if inf_ab_dia.empty:
+            st.success("Nenhuma infancia aberta.")
+        else:
+            cols_ab = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Estado"]
+            if "inf_tecnico_pai" in inf_ab_dia.columns:
+                inf_ab_dia["TR_PAI"] = inf_ab_dia["inf_tecnico_pai"].apply(_extrair_tr)
+                cols_ab.extend(["inf_tecnico_pai","TR_PAI"])
+            df_show = inf_ab_dia[cols_ab].copy()
+            rename_map = {
+                "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
+                "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "inf_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
+            }
+            st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
+
+    _sec("P0 — Controle de Encerramento")
+    cp1, cp2 = st.columns(2)
+    with cp1:
+        st.markdown("**P0 10h — Nao encerraram ate as 10h**")
+        if p0_10.empty:
+            st.success("Todos encerraram ate 10h.")
+        else:
+            t10 = p0_10.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+                Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0])),
+                Qtd =("Número SA","count")).reset_index()
+            t10.columns = ["TR","Nome","Qtd"]
+            st.dataframe(t10, use_container_width=True, hide_index=True)
+    with cp2:
+        st.markdown("**P0 15h — Nao encerraram ate as 15h**")
+        if p0_15.empty:
+            st.success("Todos encerraram ate 15h.")
+        else:
+            t15 = p0_15.groupby("CODIGO_TECNICO_EXTRAIDO").agg(
+                Nome=("Técnico Atribuído", lambda x: _n(x.iloc[0])),
+                Qtd =("Número SA","count")).reset_index()
+            t15.columns = ["TR","Nome","Qtd"]
+            st.dataframe(t15, use_container_width=True, hide_index=True)
+
 
 # =============================================================================
-# MAIN
+# 8. TELA QUALIDADE (COMPLETA + ATA INLINE + UPLOAD DRIVE)
+# =============================================================================
+
+def _cls_prod(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ("S/D", "⬜", "#94a3b8", 0)
+    v = float(v)
+    if v >= 6:   return ("EXCELENTE",        "🏆", "#1e3a5f", 4)
+    if v >= 5:   return ("PARABENS",         "🟢", "#16a34a", 3)
+    if v >= 4:   return ("PARABENS",         "🟢", "#16a34a", 3)
+    if v >= 3:   return ("ATENCAO",          "🟡", "#d97706", 2)
+    if v >= 1:   return ("PRECISA MELHORAR", "🔴", "#dc2626", 1)
+    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 1)
+
+def _cls_efic(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ("S/D", "⬜", "#94a3b8", 0)
+    v = float(v)
+    if v >= 85:  return ("EXCELENTE",        "🏆", "#1e3a5f", 4)
+    if v >= 82:  return ("PARABENS",         "🟢", "#16a34a", 3)
+    if v >= 75:  return ("ATENCAO",          "🟡", "#d97706", 2)
+    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 1)
+
+def _cls_rep(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ("S/D", "⬜", "#94a3b8", 0)
+    v = float(v)
+    if v < 2:    return ("EXCELENTE",        "🏆", "#1e3a5f", 4)
+    if v <= 5:   return ("OTIMO",            "🟢", "#16a34a", 3)
+    if v <= 9:   return ("PARABENS",         "🟢", "#16a34a", 2)
+    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 0)
+
+def _cls_inf(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ("S/D", "⬜", "#94a3b8", 0)
+    v = float(v)
+    if v < 3:    return ("OTIMO",            "🟢", "#16a34a", 3)
+    return            ("PRECISA MELHORAR",   "🔴", "#dc2626", 0)
+
+def _nota_total(pc, ec, rc, ic):
+    return pc[3] + ec[3] + rc[3] + ic[3]
+
+def _cor_nota(n):
+    if n >= 13: return "#1e3a5f"
+    if n >= 9:  return "#16a34a"
+    if n >= 5:  return "#d97706"
+    return "#dc2626"
+
+def _badge(label, cor):
+    return (f'<span style="background:{cor};color:white;padding:2px 10px;'
+            f'border-radius:12px;font-size:11px;font-weight:700">{label}</span>')
+
+def _html_ata_qualidade(nome, codigo, supervisor, mes_ref,
+                        prod_val, efic_val, rep_val, inf_val,
+                        prod_cls, efic_cls, rep_cls, inf_cls, nota):
+    nota_max = 16
+    titulo = "ATA DE DESEMPENHO OPERACIONAL"
+    cor_h = "135deg,#1e3a5f 0%,#2563eb 100%"
+    
+    if nota >= 13:
+        msg = (f"Prezado(a) <strong>{nome}</strong>, seu desempenho no periodo foi "
+               f"excepcional. Todos os indicadores estao dentro ou acima das metas. Continue assim!")
+    elif nota >= 9:
+        msg = (f"Prezado(a) <strong>{nome}</strong>, seu desempenho esta dentro das metas "
+               f"esperadas. Identifique os pontos de atencao para atingir a excelencia.")
+    elif nota >= 5:
+        msg = (f"Prezado(a) <strong>{nome}</strong>, ha indicadores que precisam de atencao. "
+               f"Vamos alinhar um plano de acao para a melhoria do desempenho.")
+    else:
+        msg = (f"Prezado(a) <strong>{nome}</strong>, seus indicadores estao abaixo das metas "
+               f"estabelecidas. E necessario um plano de acao imediato.")
+
+    def _ind(lbl, val, cls):
+        return (f'<div style="flex:1;min-width:140px;border:1px solid #e2e8f0;border-radius:8px;'
+                f'padding:14px;text-align:center">'
+                f'<div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">{lbl}</div>'
+                f'<div style="font-size:20px;font-weight:700;color:#1a3a8f;margin-bottom:8px">{val}</div>'
+                f'{_badge(cls[0], cls[2])}'
+                f'</div>')
+
+    inds_html = (
+        _ind("Produtividade", prod_val, prod_cls) +
+        _ind("Eficacia",      efic_val, efic_cls) +
+        _ind("Repetida",      rep_val,  rep_cls)  +
+        _ind("Infancia",      inf_val,  inf_cls)
+    )
+
+    cod_safe = codigo.replace("'","\\'")
+    nome_safe = nome.replace("'","\\'")
+    sup_safe  = supervisor.replace("'","\\'")
+    ts_now    = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dt_now    = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Ata — {nome}</title>
+<script src="https://cdn.jsdelivr.net/npm/signature_pad@4.0.0/dist/signature_pad.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',sans-serif}}
+body{{background:#f5f7fa;padding:20px;color:#333;line-height:1.6}}
+.box{{max-width:860px;margin:0 auto;background:white;border-radius:12px;
+      box-shadow:0 5px 25px rgba(0,0,0,.08);overflow:hidden}}
+.hdr{{background:linear-gradient({cor_h});color:white;padding:24px 30px;text-align:center}}
+.hdr h1{{font-size:20px;margin-bottom:4px;font-weight:700}}
+.hdr p{{font-size:12px;opacity:.9}}
+.body{{padding:26px}}
+.info{{background:#f0f4ff;border-radius:8px;padding:14px;margin-bottom:18px;
+       border-left:4px solid #1a3a8f;font-size:13px}}
+.info p{{margin:2px 0}}
+.msg{{background:#f8fafc;padding:13px;border-radius:8px;font-style:italic;
+      margin:16px 0;border-left:4px solid #1a3a8f;font-size:13px}}
+.inds{{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}}
+.nota{{text-align:center;margin:16px 0}}
+.nota span{{font-size:28px;font-weight:800;color:#1a3a8f}}
+.sig-box{{background:#f9fafc;border-radius:8px;padding:14px;
+          border:1px solid #eaeaea;margin-top:14px}}
+.sig-title{{font-size:13px;color:#1a3a8f;margin-bottom:8px;font-weight:600}}
+.sig-area{{position:relative;width:100%;height:120px;border:2px dashed #bdc3c7;
+           border-radius:8px;background:white;margin-bottom:10px}}
+.sig-canvas{{width:100%;height:100%;display:block;cursor:crosshair}}
+.sig-ph{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+         color:#95a5a6;font-size:13px;text-align:center;pointer-events:none}}
+.btns{{display:flex;gap:8px;margin-bottom:8px}}
+.btn{{padding:8px 14px;border:none;border-radius:6px;font-weight:600;
+      cursor:pointer;font-size:13px;flex:1}}
+.bp{{background:#1a3a8f;color:white}}
+.bs{{background:#ecf0f1;color:#333}}
+.sig-info{{background:#e8f4fc;border-radius:8px;padding:10px;margin-top:6px;
+           border-left:4px solid #1a3a8f;display:none;font-size:12px}}
+.sig-info.on{{display:block}}
+.btn-pdf{{background:#16a34a;color:white;border:none;border-radius:6px;
+          padding:12px;font-size:15px;font-weight:700;cursor:pointer;
+          width:100%;margin-top:18px}}
+.rodape{{margin-top:16px;padding-top:12px;border-top:1px solid #eaeaea;
+         font-size:11px;color:#94a3b8;text-align:center}}
+@media(max-width:560px){{.inds{{flex-direction:column}}}}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="hdr">
+    <h1>{titulo}</h1>
+    <p>Periodo: {mes_ref} &nbsp;·&nbsp; Gerado em: {dt_now}</p>
+  </div>
+  <div class="body">
+    <div class="info">
+      <p><strong>Nome:</strong> {nome}</p>
+      <p><strong>Codigo:</strong> {codigo}</p>
+      <p><strong>Supervisor:</strong> {supervisor}</p>
+    </div>
+    <div class="msg">{msg}</div>
+
+    <h3 style="color:#1a3a8f;font-size:14px;margin-bottom:10px">📊 Indicadores do Periodo</h3>
+    <div class="inds">{inds_html}</div>
+    <div class="nota">Pontuacao: <span>{nota}/{nota_max}</span></div>
+
+    <!-- Assinatura Tecnico -->
+    <div class="sig-box">
+      <div class="sig-title">✍️ Assinatura do Tecnico <span style="color:#ef4444">*</span></div>
+      <div class="sig-area">
+        <canvas id="cvT" class="sig-canvas"></canvas>
+        <div id="phT" class="sig-ph">Assine aqui (obrigatorio)</div>
+      </div>
+      <div class="btns">
+        <button class="btn bs" id="clrT">🧹 Limpar</button>
+        <button class="btn bp" id="valT">✔ Validar</button>
+      </div>
+      <div id="infoT" class="sig-info">
+        <strong>Tecnico:</strong> {nome} &nbsp;|&nbsp;
+        <strong>Data/Hora:</strong> <span id="dtT">--</span>
+      </div>
+    </div>
+
+    <!-- Assinatura Supervisor -->
+    <div class="sig-box" style="margin-top:14px">
+      <div class="sig-title">✍️ Assinatura do Supervisor <span style="color:#94a3b8">(opcional)</span></div>
+      <div class="sig-area">
+        <canvas id="cvS" class="sig-canvas"></canvas>
+        <div id="phS" class="sig-ph">Assine aqui (opcional)</div>
+      </div>
+      <div class="btns">
+        <button class="btn bs" id="clrS">🧹 Limpar</button>
+        <button class="btn bp" id="valS">✔ Validar</button>
+      </div>
+      <div id="infoS" class="sig-info">
+        <strong>Supervisor:</strong> {supervisor} &nbsp;|&nbsp;
+        <strong>Data/Hora:</strong> <span id="dtS">--</span>
+      </div>
+    </div>
+
+    <button class="btn-pdf" id="btnPDF" disabled>📄 Salvar Ata e Gerar PDF</button>
+    <div class="rodape">BERTA — Painel Operacional FTTH/GPON — Santa Catarina</div>
+  </div>
+</div>
+<script>
+let padT, padS, tecOk=false;
+function resize(cv){{const r=cv.getBoundingClientRect();cv.width=r.width;cv.height=r.height;}}
+window.onload=()=>{{
+  const cvT=document.getElementById('cvT'), cvS=document.getElementById('cvS');
+  resize(cvT); resize(cvS);
+  padT=new SignaturePad(cvT); padS=new SignaturePad(cvS);
+  padT.addEventListener('beginStroke',()=>document.getElementById('phT').style.display='none');
+  padS.addEventListener('beginStroke',()=>document.getElementById('phS').style.display='none');
+}};
+document.getElementById('clrT').onclick=()=>{{padT.clear();document.getElementById('phT').style.display='';tecOk=false;document.getElementById('btnPDF').disabled=true;document.getElementById('infoT').classList.remove('on');}};
+document.getElementById('clrS').onclick=()=>{{padS.clear();document.getElementById('phS').style.display='';document.getElementById('infoS').classList.remove('on');}};
+document.getElementById('valT').onclick=()=>{{
+  if(padT.isEmpty()){{alert('Assine antes de validar.');return;}}
+  document.getElementById('dtT').textContent=new Date().toLocaleString('pt-BR');
+  document.getElementById('infoT').classList.add('on');
+  tecOk=true; document.getElementById('btnPDF').disabled=false;
+}};
+document.getElementById('valS').onclick=()=>{{
+  if(padS.isEmpty()){{alert('Assine antes de validar.');return;}}
+  document.getElementById('dtS').textContent=new Date().toLocaleString('pt-BR');
+  document.getElementById('infoS').classList.add('on');
+}};
+document.getElementById('btnPDF').onclick=async()=>{{
+  if(!tecOk){{alert('Assinatura do tecnico e obrigatoria.');return;}}
+  const {{jsPDF}}=window.jspdf;
+  const doc=new jsPDF({{unit:'mm',format:'a4'}});
+  const W=doc.internal.pageSize.getWidth();
+  doc.setFillColor(26,58,143); doc.rect(0,0,W,38,'F');
+  doc.setTextColor(255,255,255); doc.setFontSize(13); doc.setFont(undefined,'bold');
+  doc.text('{titulo}',W/2,16,{{align:'center'}});
+  doc.setFontSize(9); doc.setFont(undefined,'normal');
+  doc.text('Periodo: {mes_ref}  |  Gerado: {dt_now}',W/2,26,{{align:'center'}});
+  let y=46; doc.setTextColor(51,51,51); doc.setFontSize(11);
+  doc.setFont(undefined,'bold'); doc.text('DADOS DO TECNICO',14,y); y+=7;
+  doc.setFont(undefined,'normal');
+  ['Nome: {nome_safe}','Codigo: {cod_safe}','Supervisor: {sup_safe}'].forEach(t=>{{doc.text(t,14,y);y+=6;}});
+  y+=4; doc.setFont(undefined,'bold'); doc.text('INDICADORES',14,y); y+=7;
+  doc.setFont(undefined,'normal');
+  ['Produtividade: {prod_val} — {prod_cls[0]}','Eficacia: {efic_val} — {efic_cls[0]}',
+   'Repetida: {rep_val} — {rep_cls[0]}','Infancia: {inf_val} — {inf_cls[0]}',
+   'Pontuacao Geral: {nota}/{nota_max}'].forEach(t=>{{doc.text(t,14,y);y+=6;}});
+  y+=6;
+  if(!padT.isEmpty()){{
+    doc.setFont(undefined,'bold'); doc.text('ASSINATURA DO TECNICO',14,y); y+=6;
+    doc.addImage(padT.toDataURL('image/png'),'PNG',14,y,80,28); y+=32;
+    doc.setFont(undefined,'normal'); doc.setFontSize(9);
+    doc.text('Validada em: '+new Date().toLocaleString('pt-BR'),14,y); y+=8;
+  }}
+  if(!padS.isEmpty()){{
+    doc.setFontSize(11); doc.setFont(undefined,'bold'); doc.text('ASSINATURA DO SUPERVISOR',14,y); y+=6;
+    doc.addImage(padS.toDataURL('image/png'),'PNG',14,y,80,28); y+=32;
+  }}
+  const pdfBase64 = doc.output('datauristring').split(',')[1];
+  // Envia para o Google Drive
+  const urlAtas = '{URL_ATAS_DRIVE}';
+  const payload = {{
+    supervisor: '{sup_safe}',
+    tecnico: '{cod_safe}',
+    pdf_base64: pdfBase64
+  }};
+  fetch(urlAtas, {{ method: 'POST', mode: 'no-cors', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(payload) }})
+    .then(() => alert('ATA salva no Google Drive com sucesso!'))
+    .catch(err => alert('Erro ao salvar no Drive: ' + err));
+  // Download local
+  doc.save('ata_qualidade_{cod_safe}_{ts_now}.pdf');
+}};
+window.addEventListener('resize',()=>{{
+  setTimeout(()=>{{
+    [padT,padS].forEach(p=>{{if(p&&p.canvas){{const r=p.canvas.getBoundingClientRect();const d=p.toData();p.canvas.width=r.width;p.canvas.height=r.height;if(d&&d.length)p.fromData(d);}}}});
+  }},200);
+}});
+</script>
+</body>
+</html>"""
+
+
+def tela_qualidade(dm, ds, f):
+    _header("🏆", "Qualidade", f)
+
+    def _n(v):
+        return str(v).split(" - ")[0].strip().title() if pd.notna(v) else ""
+
+    mes_ref = f.get("mes", "")
+
+    tecs = sorted(dm["CODIGO_TECNICO_EXTRAIDO"].dropna().unique())
+    if not tecs:
+        st.warning("Nenhum tecnico encontrado para os filtros selecionados.")
+        return
+
+    rows = []
+    for cod in tecs:
+        df_t = dm[dm["CODIGO_TECNICO_EXTRAIDO"] == cod].copy()
+        if df_t.empty:
+            continue
+
+        nome = _n(df_t["Técnico Atribuído"].dropna().iloc[0]) if not df_t["Técnico Atribuído"].dropna().empty else cod
+
+        suc = df_t[df_t["FLAG_CONCLUIDO_SUCESSO"] == "SIM"]
+        dias_unicos = suc["DIA_FIM"].dropna().nunique()
+        prod_media  = round(len(suc) / dias_unicos, 1) if dias_unicos > 0 else None
+
+        n_suc  = (df_t["FLAG_CONCLUIDO_SUCESSO"]     == "SIM").sum()
+        n_ss   = (df_t["FLAG_CONCLUIDO_SEM_SUCESSO"] == "SIM").sum()
+        efic   = round(n_suc / (n_suc + n_ss) * 100, 1) if (n_suc + n_ss) > 0 else None
+
+        rep_den = (df_t["Macro Atividade"] == "REP-FTTH").sum()
+        rep_num = ((df_t["Macro Atividade"] == "REP-FTTH") &
+                   (df_t["FLAG_REPETIDO"] == "SIM")).sum()
+        rep_pct = round(rep_num / rep_den * 100, 1) if rep_den > 0 else None
+
+        inst_den = (df_t["FLAG_INSTALACAO_VALIDA"] == "SIM").sum()
+        inst_num = ((df_t["FLAG_INSTALACAO_VALIDA"] == "SIM") &
+                    (df_t["FLAG_INFANCIA"] == "SIM")).sum()
+        inf_pct  = round(inst_num / inst_den * 100, 1) if inst_den > 0 else None
+
+        pc = _cls_prod(prod_media)
+        ec = _cls_efic(efic)
+        rc = _cls_rep(rep_pct)
+        ic = _cls_inf(inf_pct)
+        nota = _nota_total(pc, ec, rc, ic)
+
+        rows.append({
+            "cod":        cod,
+            "nome":       nome,
+            "prod_media": prod_media,
+            "efic_pct":   efic,
+            "rep_pct":    rep_pct,
+            "inf_pct":    inf_pct,
+            "prod_cls":   pc,
+            "efic_cls":   ec,
+            "rep_cls":    rc,
+            "inf_cls":    ic,
+            "nota":       nota,
+            "n_suc":      n_suc,
+            "dias":       dias_unicos,
+        })
+
+    if not rows:
+        st.warning("Sem dados suficientes para calcular indicadores.")
+        return
+
+    df_q = pd.DataFrame(rows).sort_values("nota", ascending=False).reset_index(drop=True)
+
+    n_exc = (df_q["nota"] >= 13).sum()
+    n_bom = ((df_q["nota"] >= 9) & (df_q["nota"] < 13)).sum()
+    n_atc = ((df_q["nota"] >= 5) & (df_q["nota"] < 9)).sum()
+    n_mel = (df_q["nota"] < 5).sum()
+
+    cols_kpi = st.columns(5)
+    for col, lbl, val, cls in zip(
+        cols_kpi,
+        ["Tecnicos",      "🏆 Excelente",  "✅ Bom",      "⚠️ Atencao",  "🔴 Melhoria"],
+        [len(df_q),       n_exc,            n_bom,          n_atc,          n_mel],
+        ["kpi-blue",      "kpi-blue",       "kpi-green",    "kpi-yellow",   "kpi-red"],
+    ):
+        col.markdown(_kpi(lbl, val, "", cls), unsafe_allow_html=True)
+
+    st.write("")
+    st.write("")
+    with st.expander("📋 Regras de classificacao", expanded=False):
+        st.markdown("""| Indicador | 🏆 Excelente | 🟢 Parabens / Otimo | 🟡 Atencao | 🔴 Precisa Melhorar |
+|---|---|---|---|---|
+| **Produtividade** (ativ/dia) | ≥ 6 | 4 ou 5 = Parabens | 3 | ≤ 2 |
+| **Eficacia** (%) | ≥ 85% | 82–85% | 75–82% | < 75% |
+| **Repetida** (%) | < 2% | 2–5% = Otimo · 5–9% = Parabens | — | > 9% |
+| **Infancia** (%) | — | < 3% = Otimo | — | ≥ 3% |
+
+**Pontuacao:** cada indicador vale 0–4 pontos. Total 0–16.
+≥13 Excelente | 9–12 Bom | 5–8 Atencao | <5 Precisa Melhorar""")
+
+    _sec("Ranking de Qualidade por Tecnico")
+
+    disp = []
+    for _, r in df_q.iterrows():
+        pv = f"{r['prod_media']:.1f}" if r['prod_media'] is not None else "S/D"
+        ev = f"{r['efic_pct']:.1f}%"  if r['efic_pct']   is not None else "S/D"
+        rv = f"{r['rep_pct']:.1f}%"   if r['rep_pct']    is not None else "S/D"
+        iv = f"{r['inf_pct']:.1f}%"   if r['inf_pct']    is not None else "S/D"
+        disp.append({
+            "Nome":       r["nome"],
+            "TR":         r["cod"],
+            "Prod.":      pv,
+            "Prod_S":     r["prod_cls"][0],
+            "Efic.":      ev,
+            "Efic_S":     r["efic_cls"][0],
+            "Repet.":     rv,
+            "Rep_S":      r["rep_cls"][0],
+            "Infan.":     iv,
+            "Inf_S":      r["inf_cls"][0],
+            "Nota":       f"{r['nota']}/16",
+        })
+
+    df_disp = pd.DataFrame(disp)
+
+    _cor_map = {
+        "EXCELENTE":        "background-color:#1e3a5f;color:white;font-weight:700",
+        "PARABENS":         "background-color:#16a34a;color:white;font-weight:700",
+        "OTIMO":            "background-color:#15803d;color:white;font-weight:700",
+        "ATENCAO":          "background-color:#d97706;color:white;font-weight:700",
+        "PRECISA MELHORAR": "background-color:#dc2626;color:white;font-weight:700",
+        "S/D":              "background-color:#e2e8f0;color:#64748b",
+    }
+    def _cor(v):
+        return _cor_map.get(v, "")
+
+    _scols = ["Prod_S", "Efic_S", "Rep_S", "Inf_S"]
+    try:
+        styled = df_disp.style.applymap(_cor, subset=_scols)
+    except AttributeError:
+        styled = df_disp.style.map(_cor, subset=_scols)
+
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        hide_index=True,
+        height=min(60 + len(df_disp) * 36, 700),
+        column_config={
+            "Nome":   st.column_config.TextColumn("Nome",   width="medium"),
+            "TR":     st.column_config.TextColumn("TR",     width="small"),
+            "Nota":   st.column_config.TextColumn("Nota",   width="small"),
+            "Prod.":  st.column_config.TextColumn("Prod.ativ/dia", width="small"),
+            "Efic.":  st.column_config.TextColumn("Eficacia",      width="small"),
+            "Repet.": st.column_config.TextColumn("Repetida",      width="small"),
+            "Infan.": st.column_config.TextColumn("Infancia",      width="small"),
+            "Prod_S": st.column_config.TextColumn("Status Prod.",  width="medium"),
+            "Efic_S": st.column_config.TextColumn("Status Efic.",  width="medium"),
+            "Rep_S":  st.column_config.TextColumn("Status Rep.",   width="medium"),
+            "Inf_S":  st.column_config.TextColumn("Status Inf.",   width="medium"),
+        }
+    )
+
+    st.write("")
+    _sec("Distribuicao de Classificacoes por Indicador")
+
+    _cats  = ["EXCELENTE", "OTIMO", "PARABENS", "ATENCAO", "PRECISA MELHORAR", "S/D"]
+    _cores = ["#1e3a5f",   "#2d5a8e", "#4a7db5", "#6b9bd2", "#a0c4ff",           "#94a3b8"]
+    _inds  = ["prod_cls",  "efic_cls","rep_cls", "inf_cls"]
+    _lbls  = ["Produtividade","Eficacia","Repetida","Infancia"]
+
+    fig_dist = go.Figure()
+    for cat, cor in zip(_cats, _cores):
+        vals = [
+            (df_q[ind].apply(lambda x: x[0]) == cat).sum()
+            for ind in _inds
+        ]
+        if sum(vals) == 0:
+            continue
+        fig_dist.add_trace(go.Bar(
+            name=cat, x=_lbls, y=vals,
+            marker_color=cor,
+            text=[v if v > 0 else "" for v in vals],
+            textposition="auto", textfont_size=11,
+        ))
+
+    layout_dist = _lyt("Distribuicao por Indicador e Classificacao", 340)
+    layout_dist["barmode"] = "stack"
+    layout_dist["yaxis"] = dict(title="Qtd. Tecnicos", gridcolor=C["grid"])
+    layout_dist["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    fig_dist.update_layout(layout_dist)
+    st.plotly_chart(fig_dist, use_container_width=True)
+
+    _sec("Gerar Atas de Qualidade — Assinatura Digital")
+    st.caption("Clique em 📄 ATA para abrir o formulário de assinatura logo abaixo. Ao salvar, o PDF será enviado automaticamente para o Google Drive.")
+
+    _h1, _h2, _h3, _h4, _h5, _h6, _h7 = st.columns([3, 1, 1, 1, 1, 1, 1])
+    for col, txt in zip(
+        [_h1, _h2, _h3, _h4, _h5, _h6, _h7],
+        ["**Tecnico**", "**Prod.**", "**Efic.**", "**Repet.**", "**Inf.**", "**Nota**", ""],
+    ):
+        col.markdown(txt)
+
+    sup_nome = f.get("supervisor", "N/I") or "N/I"
+
+    if "ata_html" not in st.session_state:
+        st.session_state.ata_html = None
+        st.session_state.ata_nome = ""
+
+    for _, r in df_q.iterrows():
+        pv = f"{r['prod_media']:.1f} /dia" if r['prod_media'] is not None else "S/D"
+        ev = f"{r['efic_pct']:.1f}%"       if r['efic_pct']   is not None else "S/D"
+        rv = f"{r['rep_pct']:.1f}%"        if r['rep_pct']    is not None else "S/D"
+        iv = f"{r['inf_pct']:.1f}%"        if r['inf_pct']    is not None else "S/D"
+
+        c1, c2, c3, c4, c5, c6, c7 = st.columns([3, 1, 1, 1, 1, 1, 1])
+
+        with c1:
+            st.write(f"**{r['nome']}** `{r['cod']}`")
+        with c2:
+            pc = r["prod_cls"]
+            st.markdown(f'<span style="color:{pc[2]};font-weight:700">{pc[1]} {pv}</span>',
+                        unsafe_allow_html=True)
+        with c3:
+            ec = r["efic_cls"]
+            st.markdown(f'<span style="color:{ec[2]};font-weight:700">{ec[1]} {ev}</span>',
+                        unsafe_allow_html=True)
+        with c4:
+            rc = r["rep_cls"]
+            st.markdown(f'<span style="color:{rc[2]};font-weight:700">{rc[1]} {rv}</span>',
+                        unsafe_allow_html=True)
+        with c5:
+            ic = r["inf_cls"]
+            st.markdown(f'<span style="color:{ic[2]};font-weight:700">{ic[1]} {iv}</span>',
+                        unsafe_allow_html=True)
+        with c6:
+            cor_n = _cor_nota(r["nota"])
+            st.markdown(
+                f'<span style="color:{cor_n};font-weight:800;font-size:15px">{r["nota"]}/16</span>',
+                unsafe_allow_html=True)
+        with c7:
+            if st.button("📄 ATA", key=f"ata_q_{r['cod']}"):
+                st.session_state.ata_html = _html_ata_qualidade(
+                    nome      = r["nome"],
+                    codigo    = r["cod"],
+                    supervisor= sup_nome,
+                    mes_ref   = mes_ref,
+                    prod_val  = pv,
+                    efic_val  = ev,
+                    rep_val   = rv,
+                    inf_val   = iv,
+                    prod_cls  = r["prod_cls"],
+                    efic_cls  = r["efic_cls"],
+                    rep_cls   = r["rep_cls"],
+                    inf_cls   = r["inf_cls"],
+                    nota      = r["nota"],
+                )
+                st.session_state.ata_nome = r["nome"]
+                st.rerun()
+
+    if st.session_state.ata_html:
+        st.markdown(f"**📝 Assinatura de {st.session_state.ata_nome}**")
+        st.components.v1.html(st.session_state.ata_html, height=900, scrolling=True)
+        if st.button("❌ Fechar ATA"):
+            st.session_state.ata_html = None
+            st.session_state.ata_nome = ""
+            st.rerun()
+
+
+# =============================================================================
+# 9. TELA JUSTIFICATIVAS (DIÁRIA)
+# =============================================================================
+
+def tela_justificativas(df, f):
+    _header("📝", "Justificativas Diárias", f)
+    ds = _escopo(df, f)
+
+    datas_disp = sorted(ds["FIM_DT"].dropna().dt.date.unique(), reverse=True)
+    if not datas_disp:
+        st.warning("Nenhuma data disponível.")
+        return
+
+    hoje = datetime.today().date()
+    valor_padrao = hoje if hoje in datas_disp else datas_disp[0]
+    dia_sel = st.date_input("Data de referência", value=valor_padrao,
+                            min_value=datas_disp[-1], max_value=datas_disp[0],
+                            key="dia_just")
+
+    dm = ds[ds["FIM_DT"].dt.date == dia_sel].copy()
+
+    tab1, tab2, tab3, tab4 = st.tabs(["⚠️ PZERO", "🔁 REPETIDOS", "👶 INFÂNCIA", "🚨 ALARMES 24H"])
+
+    supervisor_atual = f.get("supervisor", "N/I")
+
+    # PZERO
+    with tab1:
+        st.markdown("### PZero do dia")
+        pzero = dm[((dm["FLAG_P0_10_DIA"] == "SIM") | (dm["FLAG_P0_15_DIA"] == "SIM"))]
+        if pzero.empty:
+            st.success("Nenhum PZero registrado.")
+        else:
+            for idx, row in pzero.iterrows():
+                with st.form(key=f"pzero_form_{idx}"):
+                    c1, c2, c3 = st.columns([2,2,2])
+                    c1.write(f"**SA:** {row['Número SA']}")
+                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
+                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    just = st.text_area("Justificativa", key=f"just_pzero_{idx}")
+                    if st.form_submit_button("Enviar"):
+                        if not just:
+                            st.error("Justificativa é obrigatória.")
+                        else:
+                            payload = {
+                                "supervisor": supervisor_atual,
+                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
+                                "tipo": "PZERO",
+                                "referencia": str(row["Número SA"]),
+                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
+                            }
+                            with st.spinner("Enviando..."):
+                                try:
+                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
+                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
+                                        st.success("✅ PZERO justificado!")
+                                        st.balloons()
+                                    else:
+                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
+                                except Exception as e:
+                                    st.error(f"❌ Falha na comunicação: {e}")
+
+    # REPETIDOS
+    with tab2:
+        st.markdown("### Repetidos do dia")
+        repetidos = dm[(dm["Macro Atividade"] == "REP-FTTH") &
+                        (dm["FLAG_REPETIDO"] == "SIM") &
+                        (dm["TEC_ANTERIOR"].notna())]
+        if repetidos.empty:
+            st.success("Nenhum repetido registrado.")
+        else:
+            for idx, row in repetidos.iterrows():
+                with st.form(key=f"rep_form_{idx}"):
+                    c1, c2, c3 = st.columns([2,2,2])
+                    c1.write(f"**SA:** {row['Número SA']}")
+                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
+                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    just = st.text_area("Justificativa", key=f"just_rep_{idx}")
+                    if st.form_submit_button("Enviar"):
+                        if not just:
+                            st.error("Justificativa é obrigatória.")
+                        else:
+                            payload = {
+                                "supervisor": supervisor_atual,
+                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
+                                "tipo": "REPETIDO",
+                                "referencia": str(row["Número SA"]),
+                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
+                            }
+                            with st.spinner("Enviando..."):
+                                try:
+                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
+                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
+                                        st.success("✅ Repetido justificado!")
+                                        st.balloons()
+                                    else:
+                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
+                                except Exception as e:
+                                    st.error(f"❌ Falha na comunicação: {e}")
+
+    # INFÂNCIA
+    with tab3:
+        st.markdown("### Infâncias do dia")
+        infancias = dm[(dm["Macro Atividade"] == "INST-FTTH") &
+                        (dm["FLAG_INFANCIA"] == "SIM")]
+        if infancias.empty:
+            st.success("Nenhuma infância registrada.")
+        else:
+            for idx, row in infancias.iterrows():
+                with st.form(key=f"inf_form_{idx}"):
+                    c1, c2, c3 = st.columns([2,2,2])
+                    c1.write(f"**SA:** {row['Número SA']}")
+                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
+                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    just = st.text_area("Justificativa", key=f"just_inf_{idx}")
+                    if st.form_submit_button("Enviar"):
+                        if not just:
+                            st.error("Justificativa é obrigatória.")
+                        else:
+                            payload = {
+                                "supervisor": supervisor_atual,
+                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
+                                "tipo": "INFANCIA",
+                                "referencia": str(row["Número SA"]),
+                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
+                            }
+                            with st.spinner("Enviando..."):
+                                try:
+                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
+                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
+                                        st.success("✅ Infância justificada!")
+                                        st.balloons()
+                                    else:
+                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
+                                except Exception as e:
+                                    st.error(f"❌ Falha na comunicação: {e}")
+
+    # ALARMES 24H
+    with tab4:
+        st.markdown("### Alarmes 24h do dia")
+        alarmes = dm[(dm["ALARMADO"] == "SIM")]
+        if alarmes.empty:
+            st.success("Nenhum alarme registrado.")
+        else:
+            for idx, row in alarmes.iterrows():
+                with st.form(key=f"alrm_form_{idx}"):
+                    c1, c2, c3 = st.columns([2,2,2])
+                    c1.write(f"**SA:** {row['Número SA']}")
+                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
+                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
+                    just = st.text_area("Justificativa", key=f"just_alrm_{idx}")
+                    if st.form_submit_button("Enviar"):
+                        if not just:
+                            st.error("Justificativa é obrigatória.")
+                        else:
+                            payload = {
+                                "supervisor": supervisor_atual,
+                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
+                                "tipo": "ALARME_24H",
+                                "referencia": str(row["Número SA"]),
+                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
+                            }
+                            with st.spinner("Enviando..."):
+                                try:
+                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
+                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
+                                        st.success("✅ Alarme justificado!")
+                                        st.balloons()
+                                    else:
+                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
+                                except Exception as e:
+                                    st.error(f"❌ Falha na comunicação: {e}")
+
+
+# =============================================================================
+# 10. MAIN
 # =============================================================================
 
 def main():
-    app = Application.builder().token(TOKEN).build()
-    
-    # Comandos gerais
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("supervisor", supervisor_cmd))
-    app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CommandHandler("ajuda", ajuda))
-    app.add_handler(CommandHandler("sair", sair))
-    app.add_handler(CommandHandler("cache", cache_limpar))
-    
-    # Comandos de consulta
-    app.add_handler(CommandHandler("minhas", lambda u, c: minhas_atividades_core(u.message, c, False)))
-    app.add_handler(CommandHandler("encerradas", lambda u, c: minhas_encerradas_core(u.message, c)))
-    app.add_handler(CommandHandler("nao_atribuidas", lambda u, c: nao_atribuidas_core(u.message, c)))
-    app.add_handler(CommandHandler("alarmados", lambda u, c: alarmados_core(u.message, c)))
-    
-    # Comandos de indicadores
-    app.add_handler(CommandHandler("repetidos", lambda u, c: repetidos_core(u.message, c)))
-    app.add_handler(CommandHandler("repetidos_detalhado", lambda u, c: repetidos_detalhado_core(u.message, c)))
-    app.add_handler(CommandHandler("infancia", lambda u, c: infancia_core(u.message, c)))
-    app.add_handler(CommandHandler("infancia_detalhado", lambda u, c: infancia_detalhado_core(u.message, c)))
-    app.add_handler(CommandHandler("p0", lambda u, c: p0_core(u.message, c)))
-    app.add_handler(CommandHandler("velocidades", lambda u, c: velocidades_core(u.message, c)))
-    
-    # Comandos de operações
-    app.add_handler(CommandHandler("reversa", lambda u, c: reversa_core(u.message, c)))
-    app.add_handler(CommandHandler("mascaras", lambda u, c: mascaras_core(u.message, c)))
-    
-    # Comando de presença
-    app.add_handler(CommandHandler("presenca", lambda u, c: presenca_core(u.message, c)))
-    
-    # Pendência (ConversationHandler)
-    pendencia_conv = ConversationHandler(
-        entry_points=[CommandHandler("pendencia", pendencia_iniciar)],
-        states={
-            ESTADO_FOTOS: [
-                MessageHandler(filters.PHOTO, pendencia_receber_foto),
-                CommandHandler("continuar", pendencia_continuar)
-            ],
-            ESTADO_TIPO: [MessageHandler(filters.TEXT & ~filters.COMMAND, pendencia_tipo)],
-            ESTADO_SUBCAUSA: [MessageHandler(filters.TEXT & ~filters.COMMAND, pendencia_subcausa)],
-            ESTADO_OBS: [MessageHandler(filters.TEXT & ~filters.COMMAND, pendencia_obs)],
-        },
-        fallbacks=[CommandHandler("cancelar", pendencia_cancelar)],
-    )
-    app.add_handler(pendencia_conv)
-    
-    app.add_handler(CallbackQueryHandler(menu_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_error_handler(error_handler)
-    
-    print("="*60)
-    print("🤖 BERTA BOT - VERSÃO 10.76 + OPERAÇÕES + SUPERVISOR + PLANILHA")
-    print("✅ Repetidos: apenas cadeias com 2º reparo no mês atual, PAI, exibe GPON")
-    print("✅ Infância: apenas instalações com 1º reparo filho no mês atual")
-    print("✅ Operações: Pendência (OCR), Reversa, Máscaras")
-    print("✅ Supervisor: /supervisor NOME")
-    print("✅ Pendência salva automaticamente na planilha Google Sheets")
-    print("="*60)
-    
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    df = carregar_base()
+    if df is None:
+        st.error("❌ Não foi possível carregar a base de dados. Verifique o token de acesso.")
+        return
+
+    f    = sidebar(df)
+    tela = f["tela"]
+    dm   = _filtrar(df, f)
+    ds   = _escopo(df, f)
+
+    if f["supervisor"]:
+        st.markdown(
+            f'<div class="banner-sup">👑 Equipe de <strong>{f["supervisor"]}</strong>'
+            f' — {len(f["tecs_sup"])} tecnico(s) | {f["mes"]}</div>',
+            unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div class="banner-sup" style="background:#f0f4f8">'
+            '🕐 Dados carregados com sucesso.</div>',
+            unsafe_allow_html=True)
+
+    if tela == "📝 Justificativas":
+        tela_justificativas(df, f)
+        return
+
+    if dm.empty and tela not in ("📅 Diario", "📆 Calendario"):
+        st.warning("Nenhum dado encontrado para os filtros selecionados.")
+        return
+
+    if tela == "📅 Diario":
+        tela_diario(df, ds, f)
+    elif tela == "📊 Producao Diaria":
+        tela_producao(dm, ds, f)
+    elif tela == "🔁 Repetidos":
+        tela_repetidos(dm, ds, f)
+    elif tela == "👶 Infancia":
+        tela_infancia(dm, ds, f)
+    elif tela == "📆 Calendario":
+        tela_calendario(df, ds, f)
+    elif tela == "🏆 Qualidade":
+        tela_qualidade(dm, ds, f)
+
 
 if __name__ == "__main__":
     main()
