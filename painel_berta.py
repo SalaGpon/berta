@@ -656,7 +656,7 @@ def _escopo(df, f):
 
 
 # =============================================================================
-# 7. TELAS (Producao, Repetidos, Infancia, Calendario, Diario, Qualidade)
+# 7. TELAS (Producao, Repetidos, Infancia, Calendario, Diario)
 # =============================================================================
 
 def tela_producao(dm, ds, f):
@@ -838,52 +838,60 @@ def tela_repetidos(dm, ds, f):
                      max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
 
     if tem_vip and not num_df.empty:
-        _sec("Histórico dos GPONs Repetidos")
-        # Agrupa por GPON e exibe o histórico detalhado
-        for gpon, grupo in num_df.groupby("FSLOI_GPONAccess"):
-            # Busca todos os reparos deste GPON no escopo (ds)
+        _sec("Histórico Resumo dos GPONs Repetidos")
+        for gpon, grupo_filho in num_df.groupby("FSLOI_GPONAccess"):
             hist = ds[ds["FSLOI_GPONAccess"] == gpon].sort_values("FIM_DT")
             if hist.empty:
                 continue
 
-            # Determina o filho (presente no grupo)
-            filho = grupo.iloc[0]  # assumimos que só há um filho por GPON no num_df
-            pai_tr = filho.get("TEC_ANTERIOR", "")
+            filho = grupo_filho.iloc[0]
             filho_tr = filho.get("CODIGO_TECNICO_EXTRAIDO", "")
+            pai_tr = filho.get("TEC_ANTERIOR", "")
 
-            # Monta a string do histórico
-            historico_md = f"**GPON {gpon}**\n"
+            linhas = []
             for _, row in hist.iterrows():
                 sa = row.get("Número SA", "")
                 data = row.get("FIM_DT", "")
+                if pd.isna(data):
+                    data_str = "S/D"
+                else:
+                    data_str = pd.to_datetime(data).strftime("%d/%m/%Y") if not isinstance(data, str) else data
                 tecnico = row.get("NOME_TEC", "")
                 tr = row.get("CODIGO_TECNICO_EXTRAIDO", "")
                 desc = row.get("Descrição", "")
 
                 if tr == filho_tr and row.get("FLAG_REPETIDO", "NAO") == "SIM":
                     icone = "🔸 REPETIDO"
-                elif tr == pai_tr and data < filho["FIM_DT"]:
-                    icone = "🔹 PAI"
+                elif tr == pai_tr and pd.notna(data) and pd.notna(filho.get("FIM_DT")):
+                    if pd.to_datetime(data) < pd.to_datetime(filho["FIM_DT"]):
+                        icone = "🔹 PAI (contabiliza)"
+                    else:
+                        icone = "📌"
                 else:
-                    icone = "📌"
+                    datas = hist["FIM_DT"].dropna().sort_values()
+                    if len(datas) >= 2 and pd.notna(data):
+                        if pd.to_datetime(data) == datas.iloc[-2]:
+                            icone = "🔹 PAI (contabiliza)"
+                        else:
+                            icone = "📌"
+                    else:
+                        icone = "📌"
 
-                historico_md += f"- {icone}: SA {sa} - {data.strftime('%d/%m/%Y')} - {tecnico} - {tr}\n"
-                if desc:
-                    historico_md += f"  📝 {desc}\n"
+                linha = f"   {icone}: SA {sa} - {data_str} - {tecnico} - {tr}"
+                if desc and str(desc).strip():
+                    linha += f"\n      📝 {str(desc).strip()}"
+                linhas.append(linha)
 
-            # Endereço
             endereco = ""
             if "Logradouro" in filho.index:
                 endereco = f"{filho.get('Logradouro','')}, {filho.get('Número','')} - {filho.get('Bairro','')}"
             if endereco:
-                historico_md += f"🏠 {endereco}\n"
+                linhas.append(f"   🏠 {endereco}")
 
-            with st.expander(f"📜 {gpon}"):
-                st.markdown(historico_md, unsafe_allow_html=True)
+            with st.expander(f"📜 GPON {gpon} ({len(hist)} reparos)"):
+                st.markdown("\n".join(linhas), unsafe_allow_html=True)
 
-        # Restante dos gráficos (dia, pareto causas, pareto técnicos)
         st.divider()
-
         _sec("Repetidos por Dia do Mês")
         if "DIA_FIM" in num_df.columns:
             diario = num_df.groupby("DIA_FIM").size().reset_index(name="Repetidos")
