@@ -838,26 +838,50 @@ def tela_repetidos(dm, ds, f):
                      max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
 
     if tem_vip and not num_df.empty:
-        _sec("Detalhamento — Repetidos (VIP)")
-        num_df["Endereço"] = ""
-        if "Logradouro" in num_df.columns:
-            num_df["Endereço"] = num_df["Logradouro"].fillna("").astype(str)
-        if "Número" in num_df.columns:
-            num_df["Endereço"] += (", " + num_df["Número"].fillna("").astype(str)).str.rstrip(", ")
-        if "Bairro" in num_df.columns:
-            num_df["Endereço"] += (" - " + num_df["Bairro"].fillna("").astype(str)).str.rstrip(" -")
+        _sec("Histórico dos GPONs Repetidos")
+        # Agrupa por GPON e exibe o histórico detalhado
+        for gpon, grupo in num_df.groupby("FSLOI_GPONAccess"):
+            # Busca todos os reparos deste GPON no escopo (ds)
+            hist = ds[ds["FSLOI_GPONAccess"] == gpon].sort_values("FIM_DT")
+            if hist.empty:
+                continue
 
-        cols_det = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                                "rep_dias_anterior","rep_tecnico_filho","rep_cod_fech_anterior",
-                                "rep_agrupador_anterior","Cidade","TEC_ANTERIOR","Endereço"] if c in num_df.columns]
-        det = num_df[cols_det].copy()
-        det.rename(columns={
-            "FSLOI_GPONAccess":"GPON","Número SA":"SA Filho",
-            "CODIGO_TECNICO_EXTRAIDO":"TR (executor)",
-            "TEC_ANTERIOR":"TR (PAI)",
-        }, inplace=True)
-        st.dataframe(det, use_container_width=True, hide_index=True)
+            # Determina o filho (presente no grupo)
+            filho = grupo.iloc[0]  # assumimos que só há um filho por GPON no num_df
+            pai_tr = filho.get("TEC_ANTERIOR", "")
+            filho_tr = filho.get("CODIGO_TECNICO_EXTRAIDO", "")
 
+            # Monta a string do histórico
+            historico_md = f"**GPON {gpon}**\n"
+            for _, row in hist.iterrows():
+                sa = row.get("Número SA", "")
+                data = row.get("FIM_DT", "")
+                tecnico = row.get("NOME_TEC", "")
+                tr = row.get("CODIGO_TECNICO_EXTRAIDO", "")
+                desc = row.get("Descrição", "")
+
+                if tr == filho_tr and row.get("FLAG_REPETIDO", "NAO") == "SIM":
+                    icone = "🔸 REPETIDO"
+                elif tr == pai_tr and data < filho["FIM_DT"]:
+                    icone = "🔹 PAI"
+                else:
+                    icone = "📌"
+
+                historico_md += f"- {icone}: SA {sa} - {data.strftime('%d/%m/%Y')} - {tecnico} - {tr}\n"
+                if desc:
+                    historico_md += f"  📝 {desc}\n"
+
+            # Endereço
+            endereco = ""
+            if "Logradouro" in filho.index:
+                endereco = f"{filho.get('Logradouro','')}, {filho.get('Número','')} - {filho.get('Bairro','')}"
+            if endereco:
+                historico_md += f"🏠 {endereco}\n"
+
+            with st.expander(f"📜 {gpon}"):
+                st.markdown(historico_md, unsafe_allow_html=True)
+
+        # Restante dos gráficos (dia, pareto causas, pareto técnicos)
         st.divider()
 
         _sec("Repetidos por Dia do Mês")
@@ -2013,7 +2037,6 @@ def tela_justificativas(df, f):
 
     dm = ds[ds["FIM_DT"].dt.date == dia_sel].copy()
 
-    # Função auxiliar para montar endereço
     def _endereco(row):
         parts = []
         if "Logradouro" in row and pd.notna(row["Logradouro"]) and str(row["Logradouro"]).strip():
@@ -2041,7 +2064,6 @@ def tela_justificativas(df, f):
 
     supervisor_atual = f.get("supervisor", "N/I")
 
-    # ---------- PZERO ----------
     with tab1:
         st.markdown("### PZero do dia")
         pzero = dm[((dm["FLAG_P0_10_DIA"] == "SIM") | (dm["FLAG_P0_15_DIA"] == "SIM"))]
@@ -2081,7 +2103,6 @@ def tela_justificativas(df, f):
                                 except Exception as e:
                                     st.error(f"❌ Falha na comunicação: {e}")
 
-    # ---------- REPETIDOS ----------
     with tab2:
         st.markdown("### Repetidos do dia")
         repetidos = dm[(dm["Macro Atividade"] == "REP-FTTH") &
@@ -2123,7 +2144,6 @@ def tela_justificativas(df, f):
                                 except Exception as e:
                                     st.error(f"❌ Falha na comunicação: {e}")
 
-    # ---------- INFÂNCIA ----------
     with tab3:
         st.markdown("### Infâncias do dia")
         infancias = dm[(dm["Macro Atividade"] == "INST-FTTH") &
@@ -2164,7 +2184,6 @@ def tela_justificativas(df, f):
                                 except Exception as e:
                                     st.error(f"❌ Falha na comunicação: {e}")
 
-    # ---------- ALARMES 24H ----------
     with tab4:
         st.markdown("### Alarmes 24h do dia")
         alarmes = dm[(dm["ALARMADO"] == "SIM")]
