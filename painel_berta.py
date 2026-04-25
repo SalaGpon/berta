@@ -216,17 +216,17 @@ CAMINHO_BASE_LOCAL = next(
 )
 
 C = {
-    "bg":     "#ffffff",
-    "paper":  "#ffffff",
-    "grid":   "#e8edf3",
-    "txt":    "#475569",
-    "navy":   "#1e3a5f",
-    "navy2":  "#2d5a8e",
-    "navy3":  "#4a7db5",
-    "green":  "#16a34a",
-    "yellow": "#d97706",
-    "red":    "#dc2626",
-    "purple": "#7c3aed",
+    "bg":          "#ffffff",
+    "paper":       "#ffffff",
+    "grid":        "#e8edf3",
+    "txt":         "#475569",
+    "navy":        "#1e3a5f",
+    "navy2":       "#2d5a8e",
+    "navy3":       "#4a7db5",
+    "green":       "#16a34a",
+    "yellow":      "#d97706",
+    "red":         "#dc2626",
+    "purple":      "#7c3aed",
 }
 ROYAL = "#1e3a5f"
 ROYAL_LIGHT = "#4a7db5"
@@ -839,55 +839,24 @@ def tela_repetidos(dm, ds, f):
 
     if tem_vip and not num_df.empty:
         _sec("Histórico Resumo dos GPONs Repetidos")
+        today = pd.Timestamp.today().normalize()
+        cut_date = today - pd.DateOffset(days=30)
         for gpon, grupo_filho in num_df.groupby("FSLOI_GPONAccess"):
-            hist = ds[ds["FSLOI_GPONAccess"] == gpon].sort_values("FIM_DT")
+            hist = ds[(ds["FSLOI_GPONAccess"] == gpon) & (ds["FIM_DT"] >= cut_date)].sort_values("FIM_DT")
             if hist.empty:
                 continue
-
-            filho = grupo_filho.iloc[0]
-            filho_tr = filho.get("CODIGO_TECNICO_EXTRAIDO", "")
-            pai_tr = filho.get("TEC_ANTERIOR", "")
-
             linhas = []
-            for _, row in hist.iterrows():
+            for idx, (_, row) in enumerate(hist.iterrows(), 1):
                 sa = row.get("Número SA", "")
                 data = row.get("FIM_DT", "")
-                if pd.isna(data):
-                    data_str = "S/D"
-                else:
-                    data_str = pd.to_datetime(data).strftime("%d/%m/%Y") if not isinstance(data, str) else data
+                data_str = pd.to_datetime(data).strftime("%d/%m/%Y") if pd.notna(data) else "S/D"
                 tecnico = row.get("NOME_TEC", "")
                 tr = row.get("CODIGO_TECNICO_EXTRAIDO", "")
                 desc = row.get("Descrição", "")
-
-                if tr == filho_tr and row.get("FLAG_REPETIDO", "NAO") == "SIM":
-                    icone = "🔸 REPETIDO"
-                elif tr == pai_tr and pd.notna(data) and pd.notna(filho.get("FIM_DT")):
-                    if pd.to_datetime(data) < pd.to_datetime(filho["FIM_DT"]):
-                        icone = "🔹 PAI (contabiliza)"
-                    else:
-                        icone = "📌"
-                else:
-                    datas = hist["FIM_DT"].dropna().sort_values()
-                    if len(datas) >= 2 and pd.notna(data):
-                        if pd.to_datetime(data) == datas.iloc[-2]:
-                            icone = "🔹 PAI (contabiliza)"
-                        else:
-                            icone = "📌"
-                    else:
-                        icone = "📌"
-
-                linha = f"   {icone}: SA {sa} - {data_str} - {tecnico} - {tr}"
+                linha = f"{idx}º: SA {sa} - {data_str} - {tecnico} - {tr}"
                 if desc and str(desc).strip():
-                    linha += f"\n      📝 {str(desc).strip()}"
+                    linha += f"\n     📝 {str(desc).strip()}"
                 linhas.append(linha)
-
-            endereco = ""
-            if "Logradouro" in filho.index:
-                endereco = f"{filho.get('Logradouro','')}, {filho.get('Número','')} - {filho.get('Bairro','')}"
-            if endereco:
-                linhas.append(f"   🏠 {endereco}")
-
             with st.expander(f"📜 GPON {gpon} ({len(hist)} reparos)"):
                 st.markdown("\n".join(linhas), unsafe_allow_html=True)
 
@@ -2025,7 +1994,7 @@ def tela_qualidade(dm, ds, f):
 
 
 # =============================================================================
-# 9. TELA JUSTIFICATIVAS (DIÁRIA – COM ENDEREÇO, DESCRIÇÃO E HISTÓRICO)
+# 9. TELA JUSTIFICATIVAS (DIÁRIA – COM ENDEREÇO E DESCRIÇÃO + HISTÓRICO LIMPO)
 # =============================================================================
 
 def tela_justificativas(df, f):
@@ -2044,8 +2013,8 @@ def tela_justificativas(df, f):
                             key="dia_just")
 
     dm = ds[ds["FIM_DT"].dt.date == dia_sel].copy()
+    data_ref = pd.Timestamp(dia_sel)
 
-    # Função auxiliar para montar endereço
     def _endereco(row):
         parts = []
         if "Logradouro" in row and pd.notna(row["Logradouro"]) and str(row["Logradouro"]).strip():
@@ -2069,51 +2038,30 @@ def tela_justificativas(df, f):
             parts.append(cidade)
         return ", ".join(parts) if parts else "Endereço não disponível"
 
-    # Função interna para histórico do GPON (simplificada)
-    def _hist_gpon_md(gpon, filho_tr, pai_tr, filho_fim):
-        hist = df[df["FSLOI_GPONAccess"] == gpon].sort_values("FIM_DT")
+    def _hist_gpon_just(gpon):
+        """Histórico numerado dos últimos 30 dias."""
+        cut = data_ref - pd.DateOffset(days=30)
+        hist = df[(df["FSLOI_GPONAccess"] == gpon) & (df["FIM_DT"] >= cut) & (df["FIM_DT"] <= data_ref)].sort_values("FIM_DT")
         if hist.empty:
-            return "Sem histórico disponível."
+            return "Sem reparos nos últimos 30 dias."
         linhas = []
-        for _, row in hist.iterrows():
+        for i, (_, row) in enumerate(hist.iterrows(), 1):
             sa = row.get("Número SA", "")
             data = row.get("FIM_DT", "")
-            if pd.isna(data):
-                data_str = "S/D"
-            else:
-                data_str = pd.to_datetime(data).strftime("%d/%m/%Y") if not isinstance(data, str) else data
+            data_str = pd.to_datetime(data).strftime("%d/%m/%Y") if pd.notna(data) else "S/D"
             tecnico = row.get("NOME_TEC", "")
             tr = row.get("CODIGO_TECNICO_EXTRAIDO", "")
             desc = row.get("Descrição", "")
-
-            if tr == filho_tr and row.get("FLAG_REPETIDO", "NAO") == "SIM":
-                icone = "🔸 REPETIDO"
-            elif tr == pai_tr and pd.notna(data) and pd.notna(filho_fim):
-                if pd.to_datetime(data) < pd.to_datetime(filho_fim):
-                    icone = "🔹 PAI (contabiliza)"
-                else:
-                    icone = "📌"
-            else:
-                datas = hist["FIM_DT"].dropna().sort_values()
-                if len(datas) >= 2 and pd.notna(data):
-                    if pd.to_datetime(data) == datas.iloc[-2]:
-                        icone = "🔹 PAI (contabiliza)"
-                    else:
-                        icone = "📌"
-                else:
-                    icone = "📌"
-
-            linha = f"   {icone}: SA {sa} - {data_str} - {tecnico} - {tr}"
+            linha = f"{i}º: SA {sa} - {data_str} - {tecnico} - {tr}"
             if desc and str(desc).strip():
-                linha += f"\n      📝 {str(desc).strip()}"
+                linha += f"\n     📝 {str(desc).strip()}"
             linhas.append(linha)
-        return "\n".join(linhas) if linhas else "Sem histórico."
+        return "\n".join(linhas)
 
     tab1, tab2, tab3, tab4 = st.tabs(["⚠️ PZERO", "🔁 REPETIDOS", "👶 INFÂNCIA", "🚨 ALARMES 24H"])
 
     supervisor_atual = f.get("supervisor", "N/I")
 
-    # ---------- PZERO ----------
     with tab1:
         st.markdown("### PZero do dia")
         pzero = dm[((dm["FLAG_P0_10_DIA"] == "SIM") | (dm["FLAG_P0_15_DIA"] == "SIM"))]
@@ -2130,11 +2078,8 @@ def tela_justificativas(df, f):
                     desc = row.get("Descrição", "")
                     if pd.notna(desc) and str(desc).strip():
                         st.caption(f"📋 Descrição: {str(desc).strip()}")
-                    # Histórico GPON
-                    with st.expander("📜 Histórico do GPON"):
-                        gpon = row.get("FSLOI_GPONAccess", "")
-                        if gpon:
-                            st.markdown(_hist_gpon_md(gpon, "", "", None), unsafe_allow_html=True)
+                    with st.expander("📜 Histórico do GPON (30 dias)"):
+                        st.markdown(_hist_gpon_just(row["FSLOI_GPONAccess"]), unsafe_allow_html=True)
                     just = st.text_area("Justificativa", key=f"just_pzero_{idx}")
                     if st.form_submit_button("Enviar"):
                         if not just:
@@ -2158,7 +2103,6 @@ def tela_justificativas(df, f):
                                 except Exception as e:
                                     st.error(f"❌ Falha na comunicação: {e}")
 
-    # ---------- REPETIDOS ----------
     with tab2:
         st.markdown("### Repetidos do dia")
         repetidos = dm[(dm["Macro Atividade"] == "REP-FTTH") &
@@ -2177,13 +2121,8 @@ def tela_justificativas(df, f):
                     desc = row.get("Descrição", "")
                     if pd.notna(desc) and str(desc).strip():
                         st.caption(f"📋 Descrição: {str(desc).strip()}")
-                    # Histórico GPON
-                    with st.expander("📜 Histórico do GPON"):
-                        gpon = row["FSLOI_GPONAccess"]
-                        filho_tr = row["CODIGO_TECNICO_EXTRAIDO"]
-                        pai_tr = row.get("TEC_ANTERIOR", "")
-                        filho_fim = row["FIM_DT"]
-                        st.markdown(_hist_gpon_md(gpon, filho_tr, pai_tr, filho_fim), unsafe_allow_html=True)
+                    with st.expander("📜 Histórico do GPON (30 dias)"):
+                        st.markdown(_hist_gpon_just(row["FSLOI_GPONAccess"]), unsafe_allow_html=True)
                     just = st.text_area("Justificativa", key=f"just_rep_{idx}")
                     if st.form_submit_button("Enviar"):
                         if not just:
@@ -2207,7 +2146,6 @@ def tela_justificativas(df, f):
                                 except Exception as e:
                                     st.error(f"❌ Falha na comunicação: {e}")
 
-    # ---------- INFÂNCIA ----------
     with tab3:
         st.markdown("### Infâncias do dia")
         infancias = dm[(dm["Macro Atividade"] == "INST-FTTH") &
@@ -2225,10 +2163,8 @@ def tela_justificativas(df, f):
                     desc = row.get("Descrição", "")
                     if pd.notna(desc) and str(desc).strip():
                         st.caption(f"📋 Descrição: {str(desc).strip()}")
-                    # Histórico GPON
-                    with st.expander("📜 Histórico do GPON"):
-                        gpon = row["FSLOI_GPONAccess"]
-                        st.markdown(_hist_gpon_md(gpon, "", "", None), unsafe_allow_html=True)
+                    with st.expander("📜 Histórico do GPON (30 dias)"):
+                        st.markdown(_hist_gpon_just(row["FSLOI_GPONAccess"]), unsafe_allow_html=True)
                     just = st.text_area("Justificativa", key=f"just_inf_{idx}")
                     if st.form_submit_button("Enviar"):
                         if not just:
@@ -2252,7 +2188,6 @@ def tela_justificativas(df, f):
                                 except Exception as e:
                                     st.error(f"❌ Falha na comunicação: {e}")
 
-    # ---------- ALARMES 24H ----------
     with tab4:
         st.markdown("### Alarmes 24h do dia")
         alarmes = dm[(dm["ALARMADO"] == "SIM")]
@@ -2269,10 +2204,8 @@ def tela_justificativas(df, f):
                     desc = row.get("Descrição", "")
                     if pd.notna(desc) and str(desc).strip():
                         st.caption(f"📋 Descrição: {str(desc).strip()}")
-                    with st.expander("📜 Histórico do GPON"):
-                        gpon = row.get("FSLOI_GPONAccess", "")
-                        if gpon:
-                            st.markdown(_hist_gpon_md(gpon, "", "", None), unsafe_allow_html=True)
+                    with st.expander("📜 Histórico do GPON (30 dias)"):
+                        st.markdown(_hist_gpon_just(row["FSLOI_GPONAccess"]), unsafe_allow_html=True)
                     just = st.text_area("Justificativa", key=f"just_alrm_{idx}")
                     if st.form_submit_button("Enviar"):
                         if not just:
