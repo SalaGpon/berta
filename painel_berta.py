@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BERTA — Painel Operacional do Supervisor v3.4
-Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario
+BERTA — Painel Operacional do Supervisor v3.5
+Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario | Justificativas
 Fonte de dados: Repositório (API)
 """
 
@@ -228,10 +228,8 @@ C = {
     "red":    "#dc2626",
     "purple": "#7c3aed",
 }
-
-# Cores azul royal padronizadas para todos os gráficos
-ROYAL = "#1e3a5f"          # azul marinho (dark royal)
-ROYAL_LIGHT = "#4a7db5"    # azul mais claro para linhas/secundário
+ROYAL = "#1e3a5f"
+ROYAL_LIGHT = "#4a7db5"
 
 _LYT = dict(
     paper_bgcolor=C["paper"],
@@ -242,6 +240,10 @@ _LYT = dict(
     yaxis=dict(gridcolor=C["grid"], linecolor=C["grid"], zeroline=False, tickfont_color=C["txt"]),
     legend=dict(bgcolor="rgba(255,255,255,.9)", bordercolor=C["grid"], borderwidth=1, font_color=C["txt"]),
 )
+
+# URLs dos Web Apps do Google Apps Script
+URL_JUSTIFICATIVA = "https://script.google.com/macros/s/AKfycbzBQjCcxSMrKBlUH3H6PY4I1AvF_XKTvJcHKXsHFT6HI7J-MONPeLXTEvZZOo5da4-y/exec"
+URL_ATAS_DRIVE    = "https://script.google.com/macros/s/AKfycbyEw2E759E79Tpy3wbgZt8tip6F82aYtQiZ33-CoIpcExiUX5dUXynoBqYzJaa-fPk7DA/exec"
 
 # =============================================================================
 # 4. CARREGAMENTO DO DATAFRAME
@@ -505,6 +507,31 @@ def carregar_equipes(df=None):
 
 
 # =============================================================================
+# 4B. CARREGAR MAPEAMENTO DE CAUSAS MACRO
+# =============================================================================
+
+@st.cache_data(ttl=3600)
+def carregar_causas_macro():
+    try:
+        url = "https://raw.githubusercontent.com/SalaGpon/Berta-bot/main/Causas.xlsx"
+        r = requests.get(url, timeout=30)
+        if r.status_code != 200:
+            raise FileNotFoundError("Arquivo de causas não encontrado.")
+        df = pd.read_excel(io.BytesIO(r.content), sheet_name="Causas", dtype=str)
+        df.columns = df.columns.str.strip()
+        mapa = {}
+        for _, row in df.iterrows():
+            cod = str(row.get("cod_fechamento", "")).strip()
+            causa = str(row.get("Causa Macro", "")).strip()
+            if cod and causa:
+                mapa[cod] = causa
+        return mapa
+    except Exception as e:
+        st.warning("Não foi possível carregar a planilha de causas macro. Usando descrições originais.")
+        return {}
+
+
+# =============================================================================
 # 5. HELPERS
 # =============================================================================
 
@@ -571,7 +598,8 @@ def sidebar(df):
         st.divider()
 
         tela = st.radio("Tela",
-            ["📅 Diario", "📊 Producao Diaria", "🔁 Repetidos", "👶 Infancia", "📆 Calendario", "🏆 Qualidade"],
+            ["📅 Diario", "📊 Producao Diaria", "🔁 Repetidos", "👶 Infancia",
+             "📆 Calendario", "🏆 Qualidade", "📝 Justificativas"],
             label_visibility="collapsed", key="nav")
         st.divider()
 
@@ -629,7 +657,7 @@ def _escopo(df, f):
 
 
 # =============================================================================
-# 7. TELAS
+# 7. TELAS (Producao, Repetidos, Infancia, Calendario, Diario)
 # =============================================================================
 
 def tela_producao(dm, ds, f):
@@ -849,16 +877,23 @@ def tela_repetidos(dm, ds, f):
         else:
             st.info("Dados insuficientes para gráfico diário.")
 
-        # Pareto de causas (top 15)
+        # Pareto de causas (Causa Macro)
         _sec("Pareto de Causas dos Repetidos")
-        causas = num_df.groupby("Descrição").size().reset_index(name="Qtd")
+        mapa_causas = carregar_causas_macro()
+        if mapa_causas:
+            num_df["CAUSA_MACRO"] = num_df["Código de encerramento"].astype(str).str.strip().map(mapa_causas)
+            num_df["CAUSA_MACRO"] = num_df["CAUSA_MACRO"].fillna("OUTROS")
+        else:
+            num_df["CAUSA_MACRO"] = num_df["Descrição"].str[:50]
+
+        causas = num_df.groupby("CAUSA_MACRO").size().reset_index(name="Qtd")
         causas = causas.sort_values("Qtd", ascending=False).head(15)
         causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
         causas["Acum"] = causas["Perc"].cumsum()
         fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
-        fig_causas.add_bar(x=causas["Descrição"], y=causas["Qtd"],
+        fig_causas.add_bar(x=causas["CAUSA_MACRO"], y=causas["Qtd"],
                            name="Ocorrências", marker_color=ROYAL)
-        fig_causas.add_scatter(x=causas["Descrição"], y=causas["Acum"],
+        fig_causas.add_scatter(x=causas["CAUSA_MACRO"], y=causas["Acum"],
                                name="% Acumulado", mode="lines+markers",
                                line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
         fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
@@ -1047,20 +1082,25 @@ def tela_infancia(dm, ds, f):
         else:
             st.info("Dados insuficientes para gráfico diário.")
 
-        # Pareto de causas (top 15) – usando os reparos associados
+        # Pareto de causas (Causa Macro)
         _sec("Pareto de Causas da Infância")
         sas = inf["SA_REPARO_INFANCIA"].dropna().unique() if "SA_REPARO_INFANCIA" in inf.columns else []
         rows = ds[ds["Número SA"].isin(sas)] if len(sas) else pd.DataFrame()
-        if not rows.empty and "Descrição" in rows.columns:
-            causas = rows["Descrição"].value_counts().head(15).reset_index()
-            causas.columns = ["Causa","Qtd"]
-            causas["Causa"] = causas["Causa"].str[:50] + "..." 
+        if not rows.empty:
+            mapa_causas = carregar_causas_macro()
+            if mapa_causas:
+                rows["CAUSA_MACRO"] = rows["Código de encerramento"].astype(str).str.strip().map(mapa_causas)
+                rows["CAUSA_MACRO"] = rows["CAUSA_MACRO"].fillna("OUTROS")
+            else:
+                rows["CAUSA_MACRO"] = rows["Descrição"].str[:50]
+            causas = rows.groupby("CAUSA_MACRO").size().reset_index(name="Qtd")
+            causas = causas.sort_values("Qtd", ascending=False).head(15)
             causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
             causas["Acum"] = causas["Perc"].cumsum()
             fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
-            fig_causas.add_bar(x=causas["Causa"], y=causas["Qtd"],
+            fig_causas.add_bar(x=causas["CAUSA_MACRO"], y=causas["Qtd"],
                                name="Ocorrências", marker_color=ROYAL)
-            fig_causas.add_scatter(x=causas["Causa"], y=causas["Acum"],
+            fig_causas.add_scatter(x=causas["CAUSA_MACRO"], y=causas["Acum"],
                                    name="% Acumulado", mode="lines+markers",
                                    line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
             fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
@@ -1425,7 +1465,7 @@ def tela_diario(df, ds, f):
 
 
 # =============================================================================
-# 8. TELA QUALIDADE (COMPLETA + ATA INLINE)
+# 8. TELA QUALIDADE (COMPLETA + ATA INLINE + UPLOAD DRIVE)
 # =============================================================================
 
 def _cls_prod(v):
@@ -1676,10 +1716,19 @@ document.getElementById('btnPDF').onclick=async()=>{{
     doc.setFontSize(11); doc.setFont(undefined,'bold'); doc.text('ASSINATURA DO SUPERVISOR',14,y); y+=6;
     doc.addImage(padS.toDataURL('image/png'),'PNG',14,y,80,28); y+=32;
   }}
-  doc.setFontSize(8); doc.setTextColor(150,150,150);
-  doc.text('BERTA — Sistema Operacional FTTH/GPON — SC',W/2,285,{{align:'center'}});
+  const pdfBase64 = doc.output('datauristring').split(',')[1];
+  // Envia para o Google Drive
+  const urlAtas = '{URL_ATAS_DRIVE}';
+  const payload = {{
+    supervisor: '{sup_safe}',
+    tecnico: '{cod_safe}',
+    pdf_base64: pdfBase64
+  }};
+  fetch(urlAtas, {{ method: 'POST', mode: 'no-cors', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(payload) }})
+    .then(() => alert('ATA salva no Google Drive com sucesso!'))
+    .catch(err => alert('Erro ao salvar no Drive: ' + err));
+  // Download local
   doc.save('ata_qualidade_{cod_safe}_{ts_now}.pdf');
-  alert('PDF gerado com sucesso!');
 }};
 window.addEventListener('resize',()=>{{
   setTimeout(()=>{{
@@ -1877,7 +1926,7 @@ def tela_qualidade(dm, ds, f):
     st.plotly_chart(fig_dist, use_container_width=True)
 
     _sec("Gerar Atas de Qualidade — Assinatura Digital")
-    st.caption("Clique em 📄 ATA para abrir o formulário de assinatura logo abaixo.")
+    st.caption("Clique em 📄 ATA para abrir o formulário de assinatura logo abaixo. Ao salvar, o PDF será enviado automaticamente para o Google Drive.")
 
     _h1, _h2, _h3, _h4, _h5, _h6, _h7 = st.columns([3, 1, 1, 1, 1, 1, 1])
     for col, txt in zip(
@@ -1953,7 +2002,72 @@ def tela_qualidade(dm, ds, f):
 
 
 # =============================================================================
-# 9. MAIN
+# 9. TELA JUSTIFICATIVAS
+# =============================================================================
+
+def tela_justificativas(df, f):
+    _header("📝", "Registro de Justificativas", f)
+
+    supervisor_atual = f.get("supervisor", "") or st.text_input("Supervisor (se não filtrado)", key="sup_just")
+
+    tab1, tab2, tab3, tab4 = st.tabs(["⚠️ PZERO", "🔁 REPETIDOS", "👶 INFÂNCIA", "🚨 ALARMES 24H"])
+
+    tipos = {
+        "PZERO":       {"tipo": "PZERO",       "emoji": "⚠️", "desc": "Registre justificativas de PZero."},
+        "REPETIDO":    {"tipo": "REPETIDO",    "emoji": "🔁", "desc": "Registre justificativas de reparos repetidos."},
+        "INFANCIA":    {"tipo": "INFANCIA",    "emoji": "👶", "desc": "Registre justificativas de reparos em infância."},
+        "ALARME_24H":  {"tipo": "ALARME_24H",  "emoji": "🚨", "desc": "Registre alarmes de GPON abertos há mais de 24 horas."}
+    }
+
+    for aba, (chave, config) in zip([tab1, tab2, tab3, tab4], tipos.items()):
+        with aba:
+            st.markdown(f"{config['emoji']} **{config['desc']}**")
+            col1, col2 = st.columns(2)
+            with col1:
+                tec_disponiveis = f.get("tecnicos", [])
+                if tec_disponiveis:
+                    tecnico = st.selectbox("Técnico (TR)", tec_disponiveis, key=f"tec_{chave}")
+                else:
+                    tecnico = st.text_input("Código do Técnico (TR)", key=f"tec_{chave}")
+                referencia = st.text_input("Referência (SA/GPON)", key=f"ref_{chave}")
+            with col2:
+                if supervisor_atual:
+                    st.markdown(f"**Supervisor:** {supervisor_atual}")
+                    supervisor = supervisor_atual
+                else:
+                    supervisor = st.text_input("Supervisor", key=f"sup_{chave}")
+                data_ocorrencia = st.date_input("Data da Ocorrência", datetime.today(), key=f"data_{chave}")
+
+            justificativa = st.text_area("Justificativa *", height=100, key=f"just_{chave}")
+
+            if st.button(f"Enviar {config['tipo']}", key=f"btn_{chave}"):
+                if not tecnico or not justificativa:
+                    st.error("Técnico e justificativa são obrigatórios.")
+                else:
+                    payload = {
+                        "supervisor": supervisor or "N/I",
+                        "tecnico": tecnico.strip().upper(),
+                        "tipo": config["tipo"],
+                        "referencia": referencia.strip(),
+                        "justificativa": f"[{data_ocorrencia.strftime('%d/%m/%Y')}] {justificativa}"
+                    }
+                    with st.spinner("Enviando justificativa..."):
+                        try:
+                            resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
+                            if resp.status_code == 200 and resp.json().get("status") == "ok":
+                                st.success(f"✅ {config['emoji']} Justificativa de {config['tipo']} registrada!")
+                                st.balloons()
+                            else:
+                                st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
+                        except Exception as e:
+                            st.error(f"❌ Falha na comunicação: {e}")
+
+            st.divider()
+            with st.expander(f"📋 Histórico de {config['tipo']}"):
+                st.info("Visualização do histórico será implementada em breve. Acesse a planilha diretamente.")
+
+# =============================================================================
+# 10. MAIN
 # =============================================================================
 
 def main():
@@ -1977,6 +2091,10 @@ def main():
             '<div class="banner-sup" style="background:#f0f4f8">'
             '🕐 Dados carregados com sucesso.</div>',
             unsafe_allow_html=True)
+
+    if tela == "📝 Justificativas":
+        tela_justificativas(df, f)
+        return
 
     if dm.empty and tela not in ("📅 Diario", "📆 Calendario"):
         st.warning("Nenhum dado encontrado para os filtros selecionados.")
