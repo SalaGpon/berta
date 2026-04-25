@@ -228,8 +228,10 @@ C = {
     "red":    "#dc2626",
     "purple": "#7c3aed",
 }
-ROYAL = "#1e3a5f"
-ROYAL_LIGHT = "#4a7db5"
+
+# Cores azul royal padronizadas para todos os gráficos
+ROYAL = "#1e3a5f"          # azul marinho (dark royal)
+ROYAL_LIGHT = "#4a7db5"    # azul mais claro para linhas/secundário
 
 _LYT = dict(
     paper_bgcolor=C["paper"],
@@ -500,38 +502,6 @@ def carregar_equipes(df=None):
             st.warning(f"Não foi possível carregar a planilha de presença: {e}")
 
     return equipes
-
-
-# =============================================================================
-# 4B. CARREGAR MAPEAMENTO DE CAUSAS MACRO
-# =============================================================================
-
-@st.cache_data(ttl=3600)
-def carregar_causas_macro():
-    """
-    Retorna um dicionário {cod_fechamento (str): Causa Macro}
-    baseado no arquivo Causas.xlsx do repositório.
-    Fallback simplificado caso o arquivo não seja acessível.
-    """
-    try:
-        url = "https://raw.githubusercontent.com/SalaGpon/Berta-bot/main/Causas.xlsx"
-        r = requests.get(url, timeout=30)
-        if r.status_code != 200:
-            raise FileNotFoundError("Arquivo de causas não encontrado.")
-        df = pd.read_excel(io.BytesIO(r.content), sheet_name="Causas", dtype=str)
-        df.columns = df.columns.str.strip()
-        # As colunas esperadas: cod_fechamento, agrupador, Causa Macro, AGRU
-        mapa = {}
-        for _, row in df.iterrows():
-            cod = str(row.get("cod_fechamento", "")).strip()
-            causa = str(row.get("Causa Macro", "")).strip()
-            if cod and causa:
-                mapa[cod] = causa
-        return mapa
-    except Exception as e:
-        # Fallback essencial (caso o arquivo esteja indisponível)
-        st.warning("Não foi possível carregar a planilha de causas macro. Usando descrições originais.")
-        return {}
 
 
 # =============================================================================
@@ -879,23 +849,16 @@ def tela_repetidos(dm, ds, f):
         else:
             st.info("Dados insuficientes para gráfico diário.")
 
-        # Pareto de causas (Causa Macro)
+        # Pareto de causas (top 15)
         _sec("Pareto de Causas dos Repetidos")
-        mapa_causas = carregar_causas_macro()
-        if mapa_causas:
-            num_df["CAUSA_MACRO"] = num_df["Código de encerramento"].astype(str).str.strip().map(mapa_causas)
-            num_df["CAUSA_MACRO"] = num_df["CAUSA_MACRO"].fillna("OUTROS")
-        else:
-            num_df["CAUSA_MACRO"] = num_df["Descrição"].str[:50]  # fallback
-
-        causas = num_df.groupby("CAUSA_MACRO").size().reset_index(name="Qtd")
+        causas = num_df.groupby("Descrição").size().reset_index(name="Qtd")
         causas = causas.sort_values("Qtd", ascending=False).head(15)
         causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
         causas["Acum"] = causas["Perc"].cumsum()
         fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
-        fig_causas.add_bar(x=causas["CAUSA_MACRO"], y=causas["Qtd"],
+        fig_causas.add_bar(x=causas["Descrição"], y=causas["Qtd"],
                            name="Ocorrências", marker_color=ROYAL)
-        fig_causas.add_scatter(x=causas["CAUSA_MACRO"], y=causas["Acum"],
+        fig_causas.add_scatter(x=causas["Descrição"], y=causas["Acum"],
                                name="% Acumulado", mode="lines+markers",
                                line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
         fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
@@ -1084,25 +1047,20 @@ def tela_infancia(dm, ds, f):
         else:
             st.info("Dados insuficientes para gráfico diário.")
 
-        # Pareto de causas (Causa Macro)
+        # Pareto de causas (top 15) – usando os reparos associados
         _sec("Pareto de Causas da Infância")
         sas = inf["SA_REPARO_INFANCIA"].dropna().unique() if "SA_REPARO_INFANCIA" in inf.columns else []
         rows = ds[ds["Número SA"].isin(sas)] if len(sas) else pd.DataFrame()
-        if not rows.empty:
-            mapa_causas = carregar_causas_macro()
-            if mapa_causas:
-                rows["CAUSA_MACRO"] = rows["Código de encerramento"].astype(str).str.strip().map(mapa_causas)
-                rows["CAUSA_MACRO"] = rows["CAUSA_MACRO"].fillna("OUTROS")
-            else:
-                rows["CAUSA_MACRO"] = rows["Descrição"].str[:50]
-            causas = rows.groupby("CAUSA_MACRO").size().reset_index(name="Qtd")
-            causas = causas.sort_values("Qtd", ascending=False).head(15)
+        if not rows.empty and "Descrição" in rows.columns:
+            causas = rows["Descrição"].value_counts().head(15).reset_index()
+            causas.columns = ["Causa","Qtd"]
+            causas["Causa"] = causas["Causa"].str[:50] + "..." 
             causas["Perc"] = (causas["Qtd"] / causas["Qtd"].sum() * 100).round(1)
             causas["Acum"] = causas["Perc"].cumsum()
             fig_causas = make_subplots(specs=[[{"secondary_y": True}]])
-            fig_causas.add_bar(x=causas["CAUSA_MACRO"], y=causas["Qtd"],
+            fig_causas.add_bar(x=causas["Causa"], y=causas["Qtd"],
                                name="Ocorrências", marker_color=ROYAL)
-            fig_causas.add_scatter(x=causas["CAUSA_MACRO"], y=causas["Acum"],
+            fig_causas.add_scatter(x=causas["Causa"], y=causas["Acum"],
                                    name="% Acumulado", mode="lines+markers",
                                    line=dict(color=ROYAL_LIGHT, width=2), secondary_y=True)
             fig_causas.update_layout(**_lyt("Pareto de Causas", 350))
