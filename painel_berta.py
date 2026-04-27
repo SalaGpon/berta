@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BERTA — Painel Operacional do Supervisor v3.5
+BERTA — Painel Operacional do Supervisor v3.6
 Telas: Producao Diaria | Repetidos | Infancia | Calendario | Qualidade | Diario | Justificativas
 Fonte de dados: Repositório (API)
+Ajustes: compatibilidade com novas colunas do processador (PZERO, endereço completo)
 """
 
 import os
@@ -359,8 +360,6 @@ def _processar_df(df):
     col_descricao = "DESCRICAO"
     col_obs = "OBSERVACAO"
     col_cod_fechamento = "COD_FECHAMENTO"
-    col_flag_sucesso = "FLAG_FECHADO_SUCESSO"
-    col_flag_sem_sucesso = "FLAG_FECHADO_SEM_SUCESSO"
 
     for c in [col_fim, col_ab, col_estado, col_macro, col_tecnico, col_territorio, col_sa, col_gpon]:
         if c not in df.columns:
@@ -391,45 +390,68 @@ def _processar_df(df):
     df["MES_AB"]  = df["AB_DT"].dt.to_period("M")
     df["SEM_AB"]  = df["AB_DT"].dt.isocalendar().week.astype("Int64")
 
-    df["FLAG_CONCLUIDO_SUCESSO"] = df.get(col_flag_sucesso, "NAO")
-    df["FLAG_CONCLUIDO_SEM_SUCESSO"] = df.get(col_flag_sem_sucesso, "NAO")
+    # FLAG_CONCLUIDO_SUCESSO e FLAG_CONCLUIDO_SEM_SUCESSO
+    if "FLAG_CONCLUIDO_SUCESSO" not in df.columns:
+        df["FLAG_CONCLUIDO_SUCESSO"] = "NAO"
+    if "FLAG_CONCLUIDO_SEM_SUCESSO" not in df.columns:
+        df["FLAG_CONCLUIDO_SEM_SUCESSO"] = "NAO"
 
     df["FLAG_REPARO_VALIDO"] = (
         (df["Macro Atividade"] == "REP-FTTH") &
-        (df["FLAG_CONCLUIDO_SUCESSO"] == "SIM")
+        (df["Estado"] == "CONCLUÍDO COM SUCESSO")
     ).map({True: "SIM", False: "NAO"})
     df["FLAG_INSTALACAO_VALIDA"] = (
         (df["Macro Atividade"] == "INST-FTTH") &
-        (df["FLAG_CONCLUIDO_SUCESSO"] == "SIM")
+        (df["Estado"] == "CONCLUÍDO COM SUCESSO")
     ).map({True: "SIM", False: "NAO"})
 
-    for _f in ("FLAG_REPETIDO_ABERTO", "FLAG_P0_10_DIA", "FLAG_P0_15_DIA",
-               "FLAG_REPETIDO", "FLAG_INFANCIA", "FLAG_INF",
-               "TEC_ANTERIOR", "IF_DIAS"):
+    # Mapeamento dos flags do processador
+    for _f, _default in [
+        ("FLAG_REPETIDO", "NAO"),
+        ("FLAG_INFANCIA", "NAO"),
+        ("FLAG_INF", "NAO"),
+        ("TEC_ANTERIOR", ""),
+        ("IF_DIAS", ""),
+        ("ALARMADO", "NAO"),
+        ("CDOE", ""),
+    ]:
         if _f not in df.columns:
-            df[_f] = "NAO"
+            df[_f] = _default
         else:
-            df[_f] = df[_f].fillna("NAO")
+            df[_f] = df[_f].fillna(_default)
+
+    # NOVO: Mapear PZERO_10H e PZERO_15H para os nomes esperados pelo painel
+    if "PZERO_10H" in df.columns:
+        df["FLAG_P0_10_DIA"] = df["PZERO_10H"].fillna("NAO")
+    else:
+        df["FLAG_P0_10_DIA"] = "NAO"
+
+    if "PZERO_15H" in df.columns:
+        df["FLAG_P0_15_DIA"] = df["PZERO_15H"].fillna("NAO")
+    else:
+        df["FLAG_P0_15_DIA"] = "NAO"
+
+    # NOVO: Colunas de endereço expandidas
+    for _col, _map in [
+        ("TIPO_LOGRADOURO", "Tipo Logradouro"),
+        ("LOGRADOURO", "Logradouro"),
+        ("BAIRRO", "Bairro"),
+        ("NUMERO", "Número"),
+        ("COMPLEMENTO_TIPO", "Complemento Tipo"),
+        ("COMPLEMENTO_DESC", "Complemento Desc"),
+        ("CEP", "CEP"),
+        ("CIDADE", "Cidade"),
+    ]:
+        if _col in df.columns:
+            df[_map] = df[_col].fillna("")
+        elif _map not in df.columns:
+            df[_map] = ""
 
     df["FLAG_REPETIDO_30D"] = df["FLAG_REPETIDO"]
     df["FLAG_INFANCIA_30D"]  = df["FLAG_INFANCIA"]
 
-    if "ALARMADO" not in df.columns:
-        df["ALARMADO"] = "NAO"
-    else:
-        df["ALARMADO"] = df["ALARMADO"].fillna("NAO")
-
-    if "CDOE" not in df.columns:
-        df["CDOE"] = ""
-    else:
-        df["CDOE"] = df["CDOE"].fillna("")
-
-    if "LOGRADOURO" in df.columns:
-        df["Logradouro"] = df["LOGRADOURO"].fillna("")
-    if "NUMERO" in df.columns:
-        df["Número"] = df["NUMERO"].fillna("")
-    if "BAIRRO" in df.columns:
-        df["Bairro"] = df["BAIRRO"].fillna("")
+    if "FLAG_REPETIDO_ABERTO" not in df.columns:
+        df["FLAG_REPETIDO_ABERTO"] = "NAO"
 
     df["Território de serviço: Nome"] = df[col_territorio]
     df["Número SA"] = df[col_sa]
@@ -583,6 +605,45 @@ def _ev_dual(x, bars, line, bcolor, titulo, h=300, meta=None):
     return fig
 
 
+def _endereco_completo(row):
+    """Formata endereço completo com complemento e CEP."""
+    parts = []
+    tipo = row.get("Tipo Logradouro", "")
+    if tipo and pd.notna(tipo) and str(tipo).strip():
+        parts.append(str(tipo).strip())
+    logr = row.get("Logradouro", "")
+    if logr and pd.notna(logr) and str(logr).strip():
+        parts.append(str(logr).strip())
+    num = row.get("Número", "")
+    if num and pd.notna(num) and str(num).strip():
+        parts.append(str(num).strip())
+    comp_tipo = row.get("Complemento Tipo", "")
+    comp_desc = row.get("Complemento Desc", "")
+    if comp_tipo and pd.notna(comp_tipo) and str(comp_tipo).strip():
+        complemento = str(comp_tipo).strip()
+        if comp_desc and pd.notna(comp_desc) and str(comp_desc).strip():
+            complemento += " " + str(comp_desc).strip()
+        parts.append(complemento)
+    bairro = row.get("Bairro", "")
+    if bairro and pd.notna(bairro) and str(bairro).strip():
+        parts.append(str(bairro).strip())
+    cidade = row.get("Cidade", "")
+    if cidade and pd.notna(cidade) and str(cidade).strip():
+        parts.append(str(cidade).strip())
+    else:
+        terr = row.get("Território de serviço: Nome", "")
+        if terr and pd.notna(terr) and str(terr).strip():
+            terr_str = str(terr).strip()
+            if "." in terr_str:
+                parts.append(terr_str.split(".")[1].strip())
+            else:
+                parts.append(terr_str)
+    cep = row.get("CEP", "")
+    if cep and pd.notna(cep) and str(cep).strip():
+        parts.append("CEP " + str(cep).strip())
+    return ", ".join(parts) if parts else "Endereço não disponível"
+
+
 # =============================================================================
 # 6. SIDEBAR
 # =============================================================================
@@ -656,7 +717,7 @@ def _escopo(df, f):
 
 
 # =============================================================================
-# 7. TELAS (Producao, Repetidos, Infancia, Calendario, Diario)
+# 7. TELAS
 # =============================================================================
 
 def tela_producao(dm, ds, f):
@@ -852,8 +913,11 @@ def tela_repetidos(dm, ds, f):
                 data_str = pd.to_datetime(data).strftime("%d/%m/%Y") if pd.notna(data) else "S/D"
                 tecnico = row.get("NOME_TEC", "")
                 tr = row.get("CODIGO_TECNICO_EXTRAIDO", "")
+                endereco = _endereco_completo(row)
                 desc = row.get("Descrição", "")
                 linha = f"{idx}º: SA {sa} - {data_str} - {tecnico} - {tr}"
+                if endereco != "Endereço não disponível":
+                    linha += f"\n     🏠 {endereco}"
                 if desc and str(desc).strip():
                     linha += f"\n     📝 {str(desc).strip()}"
                 linhas.append(linha)
@@ -1052,11 +1116,13 @@ def tela_infancia(dm, ds, f):
     if tem_vip_inf and not inf.empty:
         _sec("Detalhamento — Infância (VIP)")
         cols_det = [c for c in ["Número SA","FSLOI_GPONAccess","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
-                                "inf_dias_anterior","inf_tecnico_filho","inf_dat_fech_anterior","Cidade"] if c in inf.columns]
+                                "Logradouro","Número","Bairro","Cidade",
+                                "inf_dias_anterior","inf_tecnico_filho","inf_dat_fech_anterior"] if c in inf.columns]
         det = inf[cols_det].drop_duplicates(subset=["FSLOI_GPONAccess"])
         det.rename(columns={
             "FSLOI_GPONAccess":"GPON","Número SA":"SA Inst.",
             "CODIGO_TECNICO_EXTRAIDO":"TR (Instalador)",
+            "Logradouro":"Endereço","Número":"Nº","Bairro":"Bairro","Cidade":"Cidade",
             "inf_dias_anterior":"Dias p/ reparo",
             "inf_tecnico_filho":"Tec. que Reparou"}, inplace=True)
         st.dataframe(det, use_container_width=True, hide_index=True)
@@ -1343,10 +1409,12 @@ def tela_diario(df, ds, f):
     else:
         ok = [c for c in ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC",
                            "Macro Atividade","Descrição","Observação",
+                           "Logradouro","Número","Bairro","Cidade",
                            "Código de encerramento"] if c in sem_suc.columns]
         st.dataframe(sem_suc[ok].rename(columns={
             "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR","NOME_TEC":"Tecnico",
-            "Macro Atividade":"Tipo","Código de encerramento":"Cod. Enc."}),
+            "Macro Atividade":"Tipo","Código de encerramento":"Cod. Enc.",
+            "Logradouro":"Endereço","Número":"Nº","Bairro":"Bairro","Cidade":"Cidade"}),
             use_container_width=True, hide_index=True)
 
     c1, c2 = st.columns(2)
@@ -1355,16 +1423,17 @@ def tela_diario(df, ds, f):
         if rep_dia_ab.empty:
             st.success("Nenhum repetido aberto hoje.")
         else:
-            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess"]
+            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Logradouro","Número","Bairro"]
             if "rep_tecnico_pai" in rep_dia_ab.columns:
                 rep_dia_ab["TR_PAI"] = rep_dia_ab["rep_tecnico_pai"].apply(_extrair_tr)
                 cols_rep.extend(["rep_tecnico_pai","TR_PAI"])
             if "ALARMADO" in rep_dia_ab.columns:
                 cols_rep.append("ALARMADO")
-            df_show = rep_dia_ab[cols_rep].copy()
+            df_show = rep_dia_ab[[c for c in cols_rep if c in rep_dia_ab.columns]].copy()
             rename_map = {
                 "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
                 "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "Logradouro":"Endereço","Número":"Nº","Bairro":"Bairro",
                 "rep_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
             }
             st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
@@ -1374,16 +1443,17 @@ def tela_diario(df, ds, f):
         if rep_ab_tot.empty:
             st.success("Nenhum reparo em garantia.")
         else:
-            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","DIA_AB"]
+            cols_rep = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Logradouro","Número","Bairro","DIA_AB"]
             if "rep_tecnico_pai" in rep_ab_tot.columns:
                 rep_ab_tot["TR_PAI"] = rep_ab_tot["rep_tecnico_pai"].apply(_extrair_tr)
                 cols_rep.extend(["rep_tecnico_pai","TR_PAI"])
             if "ALARMADO" in rep_ab_tot.columns:
                 cols_rep.append("ALARMADO")
-            df_show = rep_ab_tot[cols_rep].copy()
+            df_show = rep_ab_tot[[c for c in cols_rep if c in rep_ab_tot.columns]].copy()
             rename_map = {
                 "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
                 "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON","DIA_AB":"Abertura",
+                "Logradouro":"Endereço","Número":"Nº","Bairro":"Bairro",
                 "rep_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
             }
             st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
@@ -1394,16 +1464,17 @@ def tela_diario(df, ds, f):
         if inf_dia.empty:
             st.success("Nenhuma infancia hoje.")
         else:
-            cols_inf = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess"]
+            cols_inf = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Logradouro","Número","Bairro"]
             if "SA_REPARO_INFANCIA" in inf_dia.columns:
                 cols_inf.append("SA_REPARO_INFANCIA")
             if "inf_tecnico_pai" in inf_dia.columns:
                 inf_dia["TR_PAI"] = inf_dia["inf_tecnico_pai"].apply(_extrair_tr)
                 cols_inf.extend(["inf_tecnico_pai","TR_PAI"])
-            df_show = inf_dia[cols_inf].copy()
+            df_show = inf_dia[[c for c in cols_inf if c in inf_dia.columns]].copy()
             rename_map = {
                 "Número SA":"SA Inst.","CODIGO_TECNICO_EXTRAIDO":"TR",
                 "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "Logradouro":"Endereço","Número":"Nº","Bairro":"Bairro",
                 "SA_REPARO_INFANCIA":"SA Reparo",
                 "inf_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
             }
@@ -1422,14 +1493,15 @@ def tela_diario(df, ds, f):
         if inf_ab_dia.empty:
             st.success("Nenhuma infancia aberta.")
         else:
-            cols_ab = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Estado"]
+            cols_ab = ["Número SA","CODIGO_TECNICO_EXTRAIDO","NOME_TEC","FSLOI_GPONAccess","Estado","Logradouro","Número","Bairro"]
             if "inf_tecnico_pai" in inf_ab_dia.columns:
                 inf_ab_dia["TR_PAI"] = inf_ab_dia["inf_tecnico_pai"].apply(_extrair_tr)
                 cols_ab.extend(["inf_tecnico_pai","TR_PAI"])
-            df_show = inf_ab_dia[cols_ab].copy()
+            df_show = inf_ab_dia[[c for c in cols_ab if c in inf_ab_dia.columns]].copy()
             rename_map = {
                 "Número SA":"SA","CODIGO_TECNICO_EXTRAIDO":"TR",
                 "NOME_TEC":"Tecnico","FSLOI_GPONAccess":"GPON",
+                "Logradouro":"Endereço","Número":"Nº","Bairro":"Bairro",
                 "inf_tecnico_pai":"Tecnico (PAI)","TR_PAI":"TR (PAI)"
             }
             st.dataframe(df_show.rename(columns=rename_map), use_container_width=True, hide_index=True)
@@ -1459,7 +1531,7 @@ def tela_diario(df, ds, f):
 
 
 # =============================================================================
-# 8. TELA QUALIDADE (COMPLETA + ATA INLINE + UPLOAD DRIVE)
+# 8. TELA QUALIDADE
 # =============================================================================
 
 def _cls_prod(v):
@@ -1994,7 +2066,7 @@ def tela_qualidade(dm, ds, f):
 
 
 # =============================================================================
-# 9. TELA JUSTIFICATIVAS (DIÁRIA – COM ENDEREÇO E DESCRIÇÃO + HISTÓRICO LIMPO)
+# 9. TELA JUSTIFICATIVAS
 # =============================================================================
 
 def tela_justificativas(df, f):
@@ -2016,27 +2088,7 @@ def tela_justificativas(df, f):
     data_ref = pd.Timestamp(dia_sel)
 
     def _endereco(row):
-        parts = []
-        if "Logradouro" in row and pd.notna(row["Logradouro"]) and str(row["Logradouro"]).strip():
-            parts.append(str(row["Logradouro"]).strip())
-        if "Número" in row and pd.notna(row["Número"]) and str(row["Número"]).strip():
-            parts.append(str(row["Número"]).strip())
-        if "Bairro" in row and pd.notna(row["Bairro"]) and str(row["Bairro"]).strip():
-            parts.append(str(row["Bairro"]).strip())
-        cidade = ""
-        if "Cidade" in row and pd.notna(row["Cidade"]) and str(row["Cidade"]).strip():
-            cidade = str(row["Cidade"]).strip()
-        elif "Território de serviço: Nome" in row:
-            terr = str(row["Território de serviço: Nome"]).strip()
-            if "." in terr:
-                partes_terr = terr.split(".")
-                if len(partes_terr) >= 2:
-                    cidade = partes_terr[1].strip()
-            else:
-                cidade = terr
-        if cidade:
-            parts.append(cidade)
-        return ", ".join(parts) if parts else "Endereço não disponível"
+        return _endereco_completo(row)
 
     def _hist_gpon_just(gpon):
         """Histórico numerado dos últimos 30 dias."""
@@ -2051,8 +2103,11 @@ def tela_justificativas(df, f):
             data_str = pd.to_datetime(data).strftime("%d/%m/%Y") if pd.notna(data) else "S/D"
             tecnico = row.get("NOME_TEC", "")
             tr = row.get("CODIGO_TECNICO_EXTRAIDO", "")
+            endereco = _endereco(row)
             desc = row.get("Descrição", "")
             linha = f"{i}º: SA {sa} - {data_str} - {tecnico} - {tr}"
+            if endereco != "Endereço não disponível":
+                linha += f"\n     🏠 {endereco}"
             if desc and str(desc).strip():
                 linha += f"\n     📝 {str(desc).strip()}"
             linhas.append(linha)
@@ -2062,25 +2117,31 @@ def tela_justificativas(df, f):
 
     supervisor_atual = f.get("supervisor", "N/I")
 
-    with tab1:
-        st.markdown("### PZero do dia")
-        pzero = dm[((dm["FLAG_P0_10_DIA"] == "SIM") | (dm["FLAG_P0_15_DIA"] == "SIM"))]
-        if pzero.empty:
-            st.success("Nenhum PZero registrado.")
-        else:
-            for idx, row in pzero.iterrows():
-                with st.form(key=f"pzero_form_{idx}"):
+    for tab, tipo, mask_condition in [
+        (tab1, "PZERO", dm[((dm["FLAG_P0_10_DIA"] == "SIM") | (dm["FLAG_P0_15_DIA"] == "SIM"))]),
+        (tab2, "REPETIDO", dm[(dm["Macro Atividade"] == "REP-FTTH") & (dm["FLAG_REPETIDO"] == "SIM") & (dm["TEC_ANTERIOR"].notna())]),
+        (tab3, "INFANCIA", dm[(dm["Macro Atividade"] == "INST-FTTH") & (dm["FLAG_INFANCIA"] == "SIM")]),
+        (tab4, "ALARME_24H", dm[(dm["ALARMADO"] == "SIM")]),
+    ]:
+        with tab:
+            st.markdown(f"### {tipo.replace('_',' ').title()} do dia")
+            if mask_condition.empty:
+                st.success(f"Nenhum {tipo.lower()} registrado.")
+                continue
+            for idx, row in mask_condition.iterrows():
+                with st.form(key=f"just_{tipo}_{idx}"):
                     c1, c2, c3 = st.columns([2,2,2])
                     c1.write(f"**SA:** {row['Número SA']}")
                     c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
                     c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
-                    st.caption(f"🏠 Endereço: {_endereco(row)}")
+                    endereco = _endereco(row)
+                    st.caption(f"🏠 Endereço: {endereco}")
                     desc = row.get("Descrição", "")
                     if pd.notna(desc) and str(desc).strip():
                         st.caption(f"📋 Descrição: {str(desc).strip()}")
                     with st.expander("📜 Histórico do GPON (30 dias)"):
                         st.markdown(_hist_gpon_just(row["FSLOI_GPONAccess"]), unsafe_allow_html=True)
-                    just = st.text_area("Justificativa", key=f"just_pzero_{idx}")
+                    just = st.text_area("Justificativa", key=f"just_txt_{tipo}_{idx}")
                     if st.form_submit_button("Enviar"):
                         if not just:
                             st.error("Justificativa é obrigatória.")
@@ -2088,7 +2149,7 @@ def tela_justificativas(df, f):
                             payload = {
                                 "supervisor": supervisor_atual,
                                 "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
-                                "tipo": "PZERO",
+                                "tipo": tipo,
                                 "referencia": str(row["Número SA"]),
                                 "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
                             }
@@ -2096,133 +2157,7 @@ def tela_justificativas(df, f):
                                 try:
                                     resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
                                     if resp.status_code == 200 and resp.json().get("status") == "ok":
-                                        st.success("✅ PZERO justificado!")
-                                        st.balloons()
-                                    else:
-                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
-                                except Exception as e:
-                                    st.error(f"❌ Falha na comunicação: {e}")
-
-    with tab2:
-        st.markdown("### Repetidos do dia")
-        repetidos = dm[(dm["Macro Atividade"] == "REP-FTTH") &
-                        (dm["FLAG_REPETIDO"] == "SIM") &
-                        (dm["TEC_ANTERIOR"].notna())]
-        if repetidos.empty:
-            st.success("Nenhum repetido registrado.")
-        else:
-            for idx, row in repetidos.iterrows():
-                with st.form(key=f"rep_form_{idx}"):
-                    c1, c2, c3 = st.columns([2,2,2])
-                    c1.write(f"**SA:** {row['Número SA']}")
-                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
-                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
-                    st.caption(f"🏠 Endereço: {_endereco(row)}")
-                    desc = row.get("Descrição", "")
-                    if pd.notna(desc) and str(desc).strip():
-                        st.caption(f"📋 Descrição: {str(desc).strip()}")
-                    with st.expander("📜 Histórico do GPON (30 dias)"):
-                        st.markdown(_hist_gpon_just(row["FSLOI_GPONAccess"]), unsafe_allow_html=True)
-                    just = st.text_area("Justificativa", key=f"just_rep_{idx}")
-                    if st.form_submit_button("Enviar"):
-                        if not just:
-                            st.error("Justificativa é obrigatória.")
-                        else:
-                            payload = {
-                                "supervisor": supervisor_atual,
-                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
-                                "tipo": "REPETIDO",
-                                "referencia": str(row["Número SA"]),
-                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
-                            }
-                            with st.spinner("Enviando..."):
-                                try:
-                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
-                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
-                                        st.success("✅ Repetido justificado!")
-                                        st.balloons()
-                                    else:
-                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
-                                except Exception as e:
-                                    st.error(f"❌ Falha na comunicação: {e}")
-
-    with tab3:
-        st.markdown("### Infâncias do dia")
-        infancias = dm[(dm["Macro Atividade"] == "INST-FTTH") &
-                        (dm["FLAG_INFANCIA"] == "SIM")]
-        if infancias.empty:
-            st.success("Nenhuma infância registrada.")
-        else:
-            for idx, row in infancias.iterrows():
-                with st.form(key=f"inf_form_{idx}"):
-                    c1, c2, c3 = st.columns([2,2,2])
-                    c1.write(f"**SA:** {row['Número SA']}")
-                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
-                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
-                    st.caption(f"🏠 Endereço: {_endereco(row)}")
-                    desc = row.get("Descrição", "")
-                    if pd.notna(desc) and str(desc).strip():
-                        st.caption(f"📋 Descrição: {str(desc).strip()}")
-                    with st.expander("📜 Histórico do GPON (30 dias)"):
-                        st.markdown(_hist_gpon_just(row["FSLOI_GPONAccess"]), unsafe_allow_html=True)
-                    just = st.text_area("Justificativa", key=f"just_inf_{idx}")
-                    if st.form_submit_button("Enviar"):
-                        if not just:
-                            st.error("Justificativa é obrigatória.")
-                        else:
-                            payload = {
-                                "supervisor": supervisor_atual,
-                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
-                                "tipo": "INFANCIA",
-                                "referencia": str(row["Número SA"]),
-                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
-                            }
-                            with st.spinner("Enviando..."):
-                                try:
-                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
-                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
-                                        st.success("✅ Infância justificada!")
-                                        st.balloons()
-                                    else:
-                                        st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
-                                except Exception as e:
-                                    st.error(f"❌ Falha na comunicação: {e}")
-
-    with tab4:
-        st.markdown("### Alarmes 24h do dia")
-        alarmes = dm[(dm["ALARMADO"] == "SIM")]
-        if alarmes.empty:
-            st.success("Nenhum alarme registrado.")
-        else:
-            for idx, row in alarmes.iterrows():
-                with st.form(key=f"alrm_form_{idx}"):
-                    c1, c2, c3 = st.columns([2,2,2])
-                    c1.write(f"**SA:** {row['Número SA']}")
-                    c2.write(f"**TR:** {row['CODIGO_TECNICO_EXTRAIDO']} - {row['NOME_TEC']}")
-                    c3.write(f"**GPON:** {row['FSLOI_GPONAccess']}")
-                    st.caption(f"🏠 Endereço: {_endereco(row)}")
-                    desc = row.get("Descrição", "")
-                    if pd.notna(desc) and str(desc).strip():
-                        st.caption(f"📋 Descrição: {str(desc).strip()}")
-                    with st.expander("📜 Histórico do GPON (30 dias)"):
-                        st.markdown(_hist_gpon_just(row["FSLOI_GPONAccess"]), unsafe_allow_html=True)
-                    just = st.text_area("Justificativa", key=f"just_alrm_{idx}")
-                    if st.form_submit_button("Enviar"):
-                        if not just:
-                            st.error("Justificativa é obrigatória.")
-                        else:
-                            payload = {
-                                "supervisor": supervisor_atual,
-                                "tecnico": row["CODIGO_TECNICO_EXTRAIDO"],
-                                "tipo": "ALARME_24H",
-                                "referencia": str(row["Número SA"]),
-                                "justificativa": f"[{dia_sel.strftime('%d/%m/%Y')}] {just}"
-                            }
-                            with st.spinner("Enviando..."):
-                                try:
-                                    resp = requests.post(URL_JUSTIFICATIVA, json=payload, timeout=15)
-                                    if resp.status_code == 200 and resp.json().get("status") == "ok":
-                                        st.success("✅ Alarme justificado!")
+                                        st.success(f"✅ {tipo} justificado!")
                                         st.balloons()
                                     else:
                                         st.error(f"❌ Erro: {resp.json().get('mensagem', 'Falha desconhecida')}")
