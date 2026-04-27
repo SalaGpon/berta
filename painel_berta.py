@@ -390,11 +390,13 @@ def _processar_df(df):
     df["MES_AB"]  = df["AB_DT"].dt.to_period("M")
     df["SEM_AB"]  = df["AB_DT"].dt.isocalendar().week.astype("Int64")
 
-    # FLAG_CONCLUIDO_SUCESSO e FLAG_CONCLUIDO_SEM_SUCESSO
-    if "FLAG_CONCLUIDO_SUCESSO" not in df.columns:
-        df["FLAG_CONCLUIDO_SUCESSO"] = "NAO"
-    if "FLAG_CONCLUIDO_SEM_SUCESSO" not in df.columns:
-        df["FLAG_CONCLUIDO_SEM_SUCESSO"] = "NAO"
+    # *** CORREÇÃO 1: derivar flags de conclusão a partir do ESTADO ***
+    df["FLAG_CONCLUIDO_SUCESSO"] = (
+        df["Estado"].str.strip().str.upper() == "CONCLUÍDO COM SUCESSO"
+    ).map({True: "SIM", False: "NAO"})
+    df["FLAG_CONCLUIDO_SEM_SUCESSO"] = (
+        df["Estado"].str.strip().str.upper() == "CONCLUÍDO SEM SUCESSO"
+    ).map({True: "SIM", False: "NAO"})
 
     df["FLAG_REPARO_VALIDO"] = (
         (df["Macro Atividade"] == "REP-FTTH") &
@@ -899,30 +901,7 @@ def tela_repetidos(dm, ds, f):
                      max_value=max(float(tb["Taxa%"].max()) if not tb.empty else 1, 1))})
 
     if tem_vip and not num_df.empty:
-        _sec("Histórico Resumo dos GPONs Repetidos")
-        today = pd.Timestamp.today().normalize()
-        cut_date = today - pd.DateOffset(days=30)
-        for gpon, grupo_filho in num_df.groupby("FSLOI_GPONAccess"):
-            hist = ds[(ds["FSLOI_GPONAccess"] == gpon) & (ds["FIM_DT"] >= cut_date)].sort_values("FIM_DT")
-            if hist.empty:
-                continue
-            linhas = []
-            for idx, (_, row) in enumerate(hist.iterrows(), 1):
-                sa = row.get("Número SA", "")
-                data = row.get("FIM_DT", "")
-                data_str = pd.to_datetime(data).strftime("%d/%m/%Y") if pd.notna(data) else "S/D"
-                tecnico = row.get("NOME_TEC", "")
-                tr = row.get("CODIGO_TECNICO_EXTRAIDO", "")
-                endereco = _endereco_completo(row)
-                desc = row.get("Descrição", "")
-                linha = f"{idx}º: SA {sa} - {data_str} - {tecnico} - {tr}"
-                if endereco != "Endereço não disponível":
-                    linha += f"\n     🏠 {endereco}"
-                if desc and str(desc).strip():
-                    linha += f"\n     📝 {str(desc).strip()}"
-                linhas.append(linha)
-            with st.expander(f"📜 GPON {gpon} ({len(hist)} reparos)"):
-                st.markdown("\n".join(linhas), unsafe_allow_html=True)
+        # *** CORREÇÃO 2: removida a seção Histórico Resumo dos GPONs Repetidos ***
 
         st.divider()
         _sec("Repetidos por Dia do Mês")
